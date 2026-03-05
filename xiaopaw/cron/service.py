@@ -7,15 +7,20 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import time
 import uuid
+import zoneinfo
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from croniter import croniter
+
 from xiaopaw.cron.models import CronJob, CronPayload, CronSchedule, CronState
 from xiaopaw.models import InboundMessage
+from xiaopaw.observability.metrics import record_error
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +125,7 @@ class CronService:
             job.state.last_status = "error"
             job.state.last_error = str(e)
             logger.exception("CronService fire error for job %s", job.id)
+            record_error("cron", type(e).__name__)
 
         job.state.last_run_at_ms = ts_ms
 
@@ -147,11 +153,6 @@ class CronService:
     @staticmethod
     def _next_cron_ms(job: CronJob) -> int:
         """使用 croniter 计算 cron 表达式的下次触发时间。"""
-        import datetime
-        import zoneinfo
-
-        from croniter import croniter
-
         tz = zoneinfo.ZoneInfo(job.schedule.tz or "UTC")
         now_dt = datetime.datetime.now(tz)
         cron = croniter(job.schedule.expr, now_dt)

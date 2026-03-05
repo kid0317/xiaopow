@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 
@@ -16,6 +17,10 @@ from xiaopaw.api.capture_sender import CaptureSender
 from xiaopaw.api.schemas import TestRequest, TestResponse
 from xiaopaw.models import InboundMessage
 from xiaopaw.session.manager import SessionManager
+from xiaopaw.observability.metrics import (
+    http_requests_total,
+    http_request_duration_seconds,
+)
 
 
 _DEFAULT_TIMEOUT = 300.0  # 等待 Bot 回复的默认超时（秒）
@@ -44,13 +49,23 @@ def create_test_app(
 
 
 async def _handle_message(request: web.Request) -> web.Response:
-    body = await request.json()
+    path = "/api/test/message"
+    method = request.method
+    t_start = time.monotonic()
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, Exception):
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
     try:
         req = TestRequest.model_validate(body)
     except ValidationError as e:
-        return web.json_response(
+        resp = web.json_response(
             {"error": e.errors()}, status=422
         )
+        duration = time.monotonic() - t_start
+        http_requests_total.labels(path=path, method=method, status_code=str(resp.status)).inc()
+        http_request_duration_seconds.labels(path=path, method=method).observe(duration)
+        return resp
 
     msg_id = req.msg_id or f"test_{uuid.uuid4().hex[:12]}"
     ts_ms = int(time.time() * 1000)
@@ -70,7 +85,6 @@ async def _handle_message(request: web.Request) -> web.Response:
     # 注册 Future，dispatch 完成后 send 会 resolve 它
     reply_fut = sender.register(msg_id)
 
-    t_start = time.monotonic()
     await runner.dispatch(inbound)
     reply = await asyncio.wait_for(reply_fut, timeout=_DEFAULT_TIMEOUT)
     duration_ms = int((time.monotonic() - t_start) * 1000)
@@ -82,18 +96,30 @@ async def _handle_message(request: web.Request) -> web.Response:
         session = await session_mgr.get_or_create(req.routing_key)
         session_id = session.id
 
-    resp = TestResponse(
+    resp_obj = TestResponse(
         msg_id=msg_id,
         reply=reply,
         session_id=session_id,
         duration_ms=duration_ms,
         skills_called=[],  # TODO: 从 Trace 获取
     )
-    return web.json_response(resp.model_dump())
+    resp = web.json_response(resp_obj.model_dump())
+    http_requests_total.labels(path=path, method=method, status_code=str(resp.status)).inc()
+    http_request_duration_seconds.labels(path=path, method=method).observe(
+        (time.monotonic() - t_start)
+    )
+    return resp
 
 
 async def _handle_delete_sessions(request: web.Request) -> web.Response:
+    path = "/api/test/sessions"
+    method = request.method
+    t_start = time.monotonic()
     if _session_mgr_key in request.app:
         session_mgr: SessionManager = request.app[_session_mgr_key]
         await session_mgr.clear_all()
-    return web.json_response({"status": "ok"})
+    resp = web.json_response({"status": "ok"})
+    duration = time.monotonic() - t_start
+    http_requests_total.labels(path=path, method=method, status_code=str(resp.status)).inc()
+    http_request_duration_seconds.labels(path=path, method=method).observe(duration)
+    return resp

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
-from xiaopaw.models import InboundMessage
+from xiaopaw.models import Attachment, InboundMessage
 from xiaopaw.runner import Runner
 from xiaopaw.session.manager import SessionManager
 from xiaopaw.session.models import MessageEntry
@@ -47,7 +48,12 @@ def make_inbound(
 
 
 async def echo_agent(
-    user_message: str, history: list[MessageEntry], session_id: str
+    user_message: str,
+    history: list[MessageEntry],
+    session_id: str,
+    routing_key: str = "",
+    root_id: str = "",
+    verbose: bool = False,
 ) -> str:
     return f"echo: {user_message}"
 
@@ -265,7 +271,12 @@ class TestHandle:
         """第二条消息时 agent 应收到之前的历史"""
 
         async def history_agent(
-            user_msg: str, history: list[MessageEntry], sid: str
+            user_msg: str,
+            history: list[MessageEntry],
+            sid: str,
+            routing_key: str = "",
+            root_id: str = "",
+            verbose: bool = False,
         ) -> str:
             return f"history_len={len(history)}"
 
@@ -295,7 +306,12 @@ class TestHandle:
         """agent 抛异常时应发送错误提示"""
 
         async def failing_agent(
-            user_msg: str, history: list[MessageEntry], sid: str
+            user_msg: str,
+            history: list[MessageEntry],
+            sid: str,
+            routing_key: str = "",
+            root_id: str = "",
+            verbose: bool = False,
         ) -> str:
             raise RuntimeError("Agent crashed")
 
@@ -417,3 +433,184 @@ class TestWorkerLifecycle:
         # 只有一个 worker
         assert len(runner._workers) == 1
         assert set(replies) == {"echo: c0", "echo: c1", "echo: c2"}
+
+
+# ── Attachment Download ────────────────────────────────────────
+
+
+class MockDownloader:
+    """可观测的 FeishuDownloader mock"""
+
+    def __init__(self, download_result: Path | None = None) -> None:
+        self._result = download_result
+        self.calls: list[tuple[str, Attachment, str]] = []
+
+    async def download(
+        self, msg_id: str, attachment: Attachment, session_id: str
+    ) -> Path | None:
+        self.calls.append((msg_id, attachment, session_id))
+        return self._result
+
+
+def make_attachment_inbound(
+    content: str = "",
+    file_name: str = "test.jpg",
+    msg_type: str = "image",
+    msg_id: str = "om_img_001",
+) -> InboundMessage:
+    att = Attachment(msg_type=msg_type, file_key="fk_001", file_name=file_name)
+    return InboundMessage(
+        routing_key="p2p:ou_test",
+        content=content,
+        msg_id=msg_id,
+        root_id=msg_id,
+        sender_id="ou_test",
+        ts=1000000,
+        attachment=att,
+    )
+
+
+class TestAttachmentDownload:
+    async def test_with_attachment_and_successful_download(
+        self, session_mgr, mock_sender, tmp_path
+    ):
+        """有附件且下载成功 → agent 收到包含 sandbox 路径的模板消息"""
+        dl = MockDownloader(download_result=tmp_path / "test.jpg")
+        runner = Runner(
+            session_mgr=session_mgr,
+            sender=mock_sender,
+            agent_fn=echo_agent,
+            idle_timeout=2.0,
+            downloader=dl,
+        )
+
+        inbound = make_attachment_inbound(content="请分析图片", file_name="test.jpg")
+
+        try:
+            await runner.dispatch(inbound)
+            _, reply, _ = await mock_sender.wait_for_message()
+
+            # echo_agent 返回 "echo: {user_message}"，其中 user_message 是模板
+            assert "/workspace/sessions/" in reply
+            assert "test.jpg" in reply
+        finally:
+            await runner.shutdown()
+
+    async def test_with_attachment_download_fails_sends_failure_message(
+        self, session_mgr, mock_sender
+    ):
+        """有附件但下载失败 → agent 收到附件下载失败提示"""
+        dl = MockDownloader(download_result=None)
+        runner = Runner(
+            session_mgr=session_mgr,
+            sender=mock_sender,
+            agent_fn=echo_agent,
+            idle_timeout=2.0,
+            downloader=dl,
+        )
+
+        inbound = make_attachment_inbound(content="看看这个", file_name="test.jpg")
+
+        try:
+            await runner.dispatch(inbound)
+            _, reply, _ = await mock_sender.wait_for_message()
+
+            assert "下载失败" in reply
+        finally:
+            await runner.shutdown()
+
+    async def test_with_attachment_but_no_downloader_passthrough(
+        self, session_mgr, mock_sender
+    ):
+        """有附件但未注入 downloader → 原始 content 直接传给 agent"""
+        runner = Runner(
+            session_mgr=session_mgr,
+            sender=mock_sender,
+            agent_fn=echo_agent,
+            idle_timeout=2.0,
+            downloader=None,
+        )
+
+        inbound = make_attachment_inbound(content="请分析图片")
+
+        try:
+            await runner.dispatch(inbound)
+            _, reply, _ = await mock_sender.wait_for_message()
+
+            assert reply == "echo: 请分析图片"
+        finally:
+            await runner.shutdown()
+
+    async def test_without_attachment_downloader_not_called(
+        self, session_mgr, mock_sender
+    ):
+        """无附件消息 → downloader.download 不被调用"""
+        dl = MockDownloader(download_result=None)
+        runner = Runner(
+            session_mgr=session_mgr,
+            sender=mock_sender,
+            agent_fn=echo_agent,
+            idle_timeout=2.0,
+            downloader=dl,
+        )
+
+        try:
+            await runner.dispatch(make_inbound(content="普通文字消息"))
+            await mock_sender.wait_for_message()
+
+            assert len(dl.calls) == 0
+        finally:
+            await runner.shutdown()
+
+    async def test_original_text_included_in_template_when_present(
+        self, session_mgr, mock_sender, tmp_path
+    ):
+        """下载成功且有原文时，模板中包含用户备注"""
+        dl = MockDownloader(download_result=tmp_path / "doc.pdf")
+        runner = Runner(
+            session_mgr=session_mgr,
+            sender=mock_sender,
+            agent_fn=echo_agent,
+            idle_timeout=2.0,
+            downloader=dl,
+        )
+
+        inbound = make_attachment_inbound(
+            content="帮我总结一下",
+            file_name="doc.pdf",
+            msg_type="file",
+        )
+
+        try:
+            await runner.dispatch(inbound)
+            _, reply, _ = await mock_sender.wait_for_message()
+
+            # 原文备注应出现在 agent 收到的消息中
+            assert "帮我总结一下" in reply
+        finally:
+            await runner.shutdown()
+
+    async def test_download_called_with_correct_session_id(
+        self, session_mgr, mock_sender, tmp_path
+    ):
+        """downloader.download 被调用时使用了正确的 session_id"""
+        dl = MockDownloader(download_result=tmp_path / "img.jpg")
+        runner = Runner(
+            session_mgr=session_mgr,
+            sender=mock_sender,
+            agent_fn=echo_agent,
+            idle_timeout=2.0,
+            downloader=dl,
+        )
+
+        inbound = make_attachment_inbound(msg_id="om_sid_test")
+
+        try:
+            await runner.dispatch(inbound)
+            await mock_sender.wait_for_message()
+
+            assert len(dl.calls) == 1
+            _, _, session_id = dl.calls[0]
+            assert session_id.startswith("s-")
+        finally:
+            await runner.shutdown()

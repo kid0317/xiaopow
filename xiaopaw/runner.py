@@ -12,14 +12,25 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from xiaopaw.models import InboundMessage, SenderProtocol
 from xiaopaw.session.manager import SessionManager
 from xiaopaw.session.models import MessageEntry
+from xiaopaw.observability.metrics import (
+    runner_workers_active,
+    runner_queue_size,
+    routing_key_type,
+    record_error,
+)
+
+if TYPE_CHECKING:
+    from xiaopaw.feishu.downloader import FeishuDownloader
 
 logger = logging.getLogger(__name__)
 
-AgentFn = Callable[[str, list[MessageEntry], str], Awaitable[str]]
+AgentFn = Callable[[str, list[MessageEntry], str, str, str, bool], Awaitable[str]]
+# 参数依次: user_message, history, session_id, routing_key, root_id, verbose
 
 
 _HELP_TEXT = """\
@@ -33,6 +44,17 @@ _HELP_TEXT = """\
 _SLASH_COMMANDS = frozenset({"/new", "/verbose", "/help", "/status"})
 
 
+def _build_attachment_message(sandbox_path: str, original_text: str) -> str:
+    """构造附件下载成功后传给 Agent 的模板消息"""
+    msg = (
+        f"用户发来了文件，已自动保存至沙盒路径：\n`{sandbox_path}`\n"
+        "请根据文件内容和用户意图完成相应处理。"
+    )
+    if original_text.strip():
+        msg += f"\n用户备注：{original_text}"
+    return msg
+
+
 class Runner:
     """执行引擎：per-routing_key 串行队列 + Slash Command + Agent 调度"""
 
@@ -42,11 +64,13 @@ class Runner:
         sender: SenderProtocol,
         agent_fn: AgentFn | None = None,
         idle_timeout: float = 300.0,
+        downloader: FeishuDownloader | None = None,
     ) -> None:
         self._session_mgr = session_mgr
         self._sender = sender
         self._agent_fn = agent_fn or self._default_agent_fn
         self._idle_timeout = idle_timeout
+        self._downloader = downloader
         self._queues: dict[str, asyncio.Queue[InboundMessage]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
         self._dispatch_lock = asyncio.Lock()
@@ -60,7 +84,13 @@ class Runner:
             if key not in self._queues:
                 self._queues[key] = asyncio.Queue()
                 self._workers[key] = asyncio.create_task(self._worker(key))
+                rk_type = routing_key_type(key)
+                runner_workers_active.labels(routing_key_type=rk_type).inc()
         await self._queues[key].put(inbound)
+        rk_type = routing_key_type(key)
+        runner_queue_size.labels(routing_key_type=rk_type).set(
+            self._queues[key].qsize()
+        )
 
     async def shutdown(self) -> None:
         """取消所有 worker，释放资源"""
@@ -94,17 +124,23 @@ class Runner:
                     if self._workers.get(key) is asyncio.current_task():
                         self._queues.pop(key, None)
                         self._workers.pop(key, None)
+                        rk_type = routing_key_type(key)
+                        runner_workers_active.labels(
+                            routing_key_type=rk_type
+                        ).dec()
                 return
             try:
                 await self._handle(inbound)
             except Exception:
                 logger.exception("[%s] handle error", key)
+                record_error("runner", "handle_error")
                 try:
                     await self._sender.send(
                         key, "处理出错，请稍后重试。", inbound.root_id
                     )
                 except Exception:
                     logger.exception("[%s] failed to send error message", key)
+                    record_error("runner", "send_error_message_failed")
             finally:
                 queue.task_done()
 
@@ -123,18 +159,37 @@ class Runner:
         # 2. 动态解析当前 active session
         session = await self._session_mgr.get_or_create(key)
 
-        # 3. TODO: 附件下载（Downloader 未实现）
+        # 3. 附件下载
+        user_content = inbound.content
+        if inbound.attachment and self._downloader:
+            sandbox_path = (
+                f"/workspace/sessions/{session.id}/uploads/"
+                f"{inbound.attachment.file_name}"
+            )
+            local_path = await self._downloader.download(
+                inbound.msg_id, inbound.attachment, session.id
+            )
+            if local_path is not None:
+                user_content = _build_attachment_message(
+                    sandbox_path=sandbox_path,
+                    original_text=inbound.content,
+                )
+            else:
+                user_content = f"[附件下载失败] {inbound.content}".strip()
 
         # 4. 加载对话历史
         history = await self._session_mgr.load_history(session.id)
 
         # 5. 执行 Agent
-        reply = await self._agent_fn(inbound.content, history, session.id)
+        reply = await self._agent_fn(
+            user_content, history, session.id,
+            inbound.routing_key, inbound.root_id, session.verbose,
+        )
 
         # 6. 写入 session 历史
         await self._session_mgr.append(
             session.id,
-            user=inbound.content,
+            user=user_content,
             feishu_msg_id=inbound.msg_id,
             assistant=reply,
         )
@@ -198,6 +253,9 @@ class Runner:
         user_message: str,
         history: list[MessageEntry],
         session_id: str,
+        routing_key: str = "",
+        root_id: str = "",
+        verbose: bool = False,
     ) -> str:
         """默认 agent（未注入时使用），后续替换为 CrewAI"""
         raise NotImplementedError("agent_fn not configured")

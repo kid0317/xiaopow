@@ -146,7 +146,12 @@ class TestDeleteSessions:
 
 
 async def _echo_agent(
-    user_message: str, history: list[MessageEntry], session_id: str
+    user_message: str,
+    history: list[MessageEntry],
+    session_id: str,
+    routing_key: str = "",
+    root_id: str = "",
+    verbose: bool = False,
 ) -> str:
     return f"echo: {user_message}"
 

@@ -1,0 +1,24 @@
+# Skill 清单：m2l16 Skills 生态课程演示
+#
+# type 字段区分 Skill 的执行方式：
+#   task      → 触发独立 Sub-Crew 在 AIO-Sandbox 中执行（需要代码运行）
+#   reference → 直接注入指令到调用方上下文，不启动 Sub-Crew（只读规范类）
+#
+# 💡 核心点：type 写在这里，不改 Anthropic 官方 SKILL.md 文件
+
+skills:
+  - name: pdf
+    path: ./pdf
+    type: task       # 需要代码执行（pypdf / pdfplumber）
+    enabled: true
+
+  - name: docx
+    path: ./docx
+    type: task       # 需要代码执行（docx-js / pandoc）
+    enabled: true
+
+  # 预留：参考型 Skill 示例（如品牌规范、代码规范等）
+  # - name: brand-guidelines
+  #   path: ./brand-guidelines
+  #   type: reference   # 只读指令，不执行脚本
+  #   enabled: false
