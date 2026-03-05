@@ -1,7 +1,7 @@
 # XiaoPaw 详细设计文档
 
 > **项目**：XiaoPaw（小爪子）——飞书本地工作助手
-> **课程**：第17课 项目实战2（工具篇完结）
+> **课程**：第17课 项目实战2（工具篇）
 > **版本**：v0.1 草稿
 > **最后更新**：2026-03-04
 
@@ -91,9 +91,9 @@ graph TB
 
     subgraph XiaoPaw 主进程
         FL[FeishuListener\nlark-oapi ws.Client]
-        DL[FeishuDownloader\n文件/图片预下载]
         SR[SessionRouter\n路由键解析]
         Runner[Runner\n执行引擎]
+        DL[FeishuDownloader\n文件/图片下载]
         CS[CronService\nasyncio 精确 timer]
 
         subgraph Agent层
@@ -120,12 +120,12 @@ graph TB
     end
 
     FS_WS -->|WebSocket 推送| FL
-    FL -->|附件消息| DL
-    DL -->|写入| WS
-    FL -->|InboundMessage| SR
-    DL -->|InboundMessage + 文件路径| SR
+    FL -->|InboundMessage\n含附件元信息| SR
     SR --> Runner
     Runner -->|读写| IDX
+    Runner -->|session 确定后| DL
+    DL -->|GET /messages/:id/resources/:key| FS_API
+    DL -->|写入 session uploads/| WS
     Runner -->|读写| SESS
     Runner -->|写入| TRACE
     Runner --> MA
@@ -150,9 +150,9 @@ graph TB
 sequenceDiagram
     participant F as 飞书
     participant FL as FeishuListener
-    participant DL as Downloader
     participant SR as SessionRouter
     participant R as Runner
+    participant DL as Downloader
     participant MA as Main Agent
     participant SLT as SkillLoaderTool
     participant SC as Sub-Crew
@@ -161,18 +161,22 @@ sequenceDiagram
 
     F->>FL: WebSocket P2ImMessageReceiveV1
     FL->>FL: 解析 EventMessage
+    FL->>SR: EventMessage → resolve_routing_key()
+    SR->>R: InboundMessage{routing_key, content, msg_id, attachment?, ...}
+    R->>R: dispatch → 入队 per-routing_key Queue
 
-    alt msg_type == image/file
-        FL->>DL: download_attachment(message_id, content, session_dir/uploads/)
+    Note over R: worker 串行消费
+    R->>R: load_session(routing_key) → session_id
+
+    alt msg 有 attachment 元信息
+        R->>DL: download_attachment(message_id, file_key, session uploads/ 目录)
         DL->>F: GET /messages/:id/resources/:key
         F-->>DL: 二进制内容
-        DL->>DL: 写入 uploads/
+        DL->>DL: 写入 workspace/sessions/{sid}/uploads/
+        DL-->>R: 本地文件路径
+        R->>R: content 改写为文件路径提示
     end
 
-    FL->>SR: EventMessage → resolve_routing_key()
-    SR->>R: InboundMessage{routing_key, content, msg_id, ...}
-
-    R->>R: load_session(routing_key) → history
     R->>R: TraceWriter.init(session_id, msg_id)
     R->>R: 拦截 slash command（/new /verbose /help）
 
@@ -210,15 +214,18 @@ sequenceDiagram
 
 ```
 xiaopaw/
-├── main.py                      # 进程入口：启动 Listener + CronService + CleanupService
+├── main.py                      # 进程入口：启动 Listener + CronService + CleanupService + TestAPI
 ├── config.yaml                  # Workspace 配置（见第10节）
 ├── requirements.txt
 │
 ├── feishu/
 │   ├── listener.py              # WebSocket 事件监听，事件 → InboundMessage
-│   ├── downloader.py            # 飞书文件/图片下载，保存至 session uploads/
+│   ├── downloader.py            # 飞书文件/图片下载（由 Runner 在 session 确定后调用）
 │   ├── sender.py                # 消息发送（create / reply），含重试
 │   └── session_key.py           # routing_key 解析（p2p / group / thread）
+│
+├── api/
+│   └── test_server.py           # 测试 API（aiohttp），模拟飞书消息事件，仅 debug 模式启用
 │
 ├── runner.py                    # 执行引擎：session加载 → slash拦截 → Agent → 存储 → 发送
 │
@@ -283,7 +290,7 @@ xiaopaw/
 
 ### 4.1 FeishuListener（飞书接入）
 
-**职责**：维护 WebSocket 长连接，接收飞书事件，解析后交给下游。
+**职责**：维护 WebSocket 长连接，接收飞书事件，解析后交给下游。**不负责文件下载**（下载在 Runner 中 session 确定后执行）。
 
 **接入方案**：WebSocket 长连接（lark-oapi `ws.Client`），无需公网 IP，适合本地/内网部署。
 
@@ -292,8 +299,8 @@ xiaopaw/
 | msg_type | 处理逻辑 |
 |----------|---------|
 | `text` | 直接提取 `content.text`，构造 InboundMessage |
-| `image` | 触发 Downloader 下载到 `uploads/`，content 改写为本地路径提示 |
-| `file` | 触发 Downloader 下载到 `uploads/`，content 改写为本地路径提示 |
+| `image` | 解析 `image_key`，存入 `attachment` 字段，content 置空 |
+| `file` | 解析 `file_key` + `file_name`，存入 `attachment` 字段，content 置空 |
 | `post` | 提取富文本纯文本部分，构造 InboundMessage |
 | `audio` | 回复"暂不支持语音消息"，不进入 Agent |
 | `sticker` | 忽略，不回复 |
@@ -320,8 +327,8 @@ class FeishuListener:
 
         routing_key = resolve_routing_key(event)
 
-        # 附件消息：先下载到 session uploads/
-        content = await self._preprocess_content(msg, routing_key)
+        # 解析消息内容和附件元信息（不下载）
+        content, attachment = self._parse_content(msg)
 
         await self.on_message(InboundMessage(
             routing_key=routing_key,
@@ -330,6 +337,7 @@ class FeishuListener:
             root_id=msg.root_id or msg.message_id,
             sender_id=sender.id,
             ts=int(msg.create_time),
+            attachment=attachment,
         ))
 ```
 
@@ -345,7 +353,7 @@ class FeishuListener:
 |---------|---------|-------------|
 | 单聊 | `chat_type == "p2p"` | `p2p:{open_id}` |
 | 普通群聊 | `chat_type == "group"` AND `thread_id` 为空 | `group:{chat_id}` |
-| 话题群（某话题）| `chat_type == "group"` AND `thread_id` 非空 | `thread:{thread_id}` |
+| 话题群（某话题）| `chat_type == "group"` AND `thread_id` 非空 | `thread:{chat_id}:{thread_id}` |
 
 ```python
 def resolve_routing_key(event: P2ImMessageReceiveV1) -> str:
@@ -354,7 +362,7 @@ def resolve_routing_key(event: P2ImMessageReceiveV1) -> str:
     if msg.chat_type == "p2p":
         return f"p2p:{sender.id}"         # sender.id = open_id
     if msg.thread_id:
-        return f"thread:{msg.thread_id}"
+        return f"thread:{msg.chat_id}:{msg.thread_id}"
     return f"group:{msg.chat_id}"
 ```
 
@@ -364,37 +372,99 @@ def resolve_routing_key(event: P2ImMessageReceiveV1) -> str:
 
 **职责**：核心协调层，串联 Session 管理、Agent 执行、存储写入、消息回复。
 
-**主流程**：
+**并发控制**：同一 `routing_key` 的消息**串行处理**，不同 routing_key 之间**并行**。
+
+- 队列锁在 **routing_key** 上（同一用户/群/话题的消息串行）
+- 每次 `_handle` 调用 `get_or_create(routing_key)` **动态解析**当前 `active_session_id`
+- `/new` 命令在 `_handle_slash` 中更新 `active_session_id`，后续消息自动使用新 session
+- 同一 routing_key 下可能存在多个历史 session，但同一时刻只有一个 active
+
+```
+routing_key（队列维度）        active_session_id（动态解析）
+─────────────────────        ─────────────────────────────
+p2p:ou_abc123           →    s-uuid-002（/new 后变为 s-uuid-003）
+group:oc_chat456        →    s-uuid-004
+thread:oc_chat789:ot_x  →    s-uuid-005
+```
+
+- 每个 routing_key 维护一个 `asyncio.Queue`，消息按到达顺序入队
+- 首条消息入队时自动启动该 routing_key 的 worker coroutine
+- worker 逐条消费，执行完一条再取下一条
+- 队列空闲超时后 worker 自动退出，释放内存
 
 ```python
 class Runner:
-    async def handle(self, inbound: InboundMessage):
+    def __init__(self, ...):
+        self._queues: dict[str, asyncio.Queue] = {}   # routing_key → Queue
+        self._workers: dict[str, asyncio.Task] = {}    # routing_key → worker Task
+
+    async def dispatch(self, inbound: InboundMessage):
+        """外部入口：消息入队，确保同一会话串行执行"""
+        key = inbound.routing_key
+        if key not in self._queues:
+            self._queues[key] = asyncio.Queue()
+            self._workers[key] = asyncio.create_task(self._worker(key))
+        await self._queues[key].put(inbound)
+
+    async def _worker(self, key: str):
+        """per-routing_key worker：逐条消费队列"""
+        queue = self._queues[key]
+        idle_timeout = 300  # 5分钟无消息后退出
+        while True:
+            try:
+                inbound = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
+            except asyncio.TimeoutError:
+                del self._queues[key]
+                del self._workers[key]
+                return
+            try:
+                await self._handle(inbound)
+            except Exception as e:
+                logger.error(f"[{key}] handle error: {e}", exc_info=True)
+                await self.sender.send(key, "处理出错，请稍后重试。", inbound.root_id)
+
+    async def _handle(self, inbound: InboundMessage):
         # 1. Slash Command 拦截（不进入 Agent）
+        #    注意：/new 会更新 index.json 中的 active_session_id
         if reply := self._handle_slash(inbound):
             await self.sender.send(inbound.routing_key, reply, inbound.root_id)
             return
 
-        # 2. 加载 / 创建 Session
+        # 2. 动态解析当前 active session（每次从 index.json 读取，/new 后自然切换）
         session = self.session_mgr.get_or_create(inbound.routing_key)
 
-        # 3. 加载对话历史（最近 max_turns 条）
+        # 3. 附件下载（session 确定后才知道目标目录）
+        if inbound.attachment:
+            uploads_dir = self._session_uploads_dir(session.session_id)
+            file_path = await self.downloader.download(
+                message_id=inbound.msg_id,
+                attachment=inbound.attachment,
+                dest_dir=uploads_dir,
+            )
+            if file_path:
+                inbound.content = build_file_message(
+                    file_path=f"/workspace/sessions/{session.session_id}/uploads/{file_path.name}",
+                    original_text=inbound.content,
+                )
+
+        # 4. 加载对话历史（最近 max_turns 条）
         history = self.session_mgr.load_history(session.session_id, max_turns=20)
 
-        # 4. 构建 Crew（注入 verbose step_callback）
+        # 5. 构建 Crew（注入 verbose step_callback）
         step_cb = self._make_step_callback(session, inbound.routing_key)
         crew = build_main_crew(step_callback=step_cb)
 
-        # 5. 构建 Trace Writer
+        # 6. 构建 Trace Writer
         trace = TraceWriter(session.session_id, inbound.msg_id)
 
-        # 6. 执行主 Agent
+        # 7. 执行主 Agent
         result = await crew.akickoff(inputs={
             "history": format_history(history),
             "user_message": inbound.content,
             "session_dir": f"/workspace/sessions/{session.session_id}",
         })
 
-        # 7. 写 Trace + Session
+        # 8. 写 Trace + Session
         trace.finalize(result, skills_called=[...])
         self.session_mgr.append(session.session_id,
             user=inbound.content, feishu_msg_id=inbound.msg_id,
@@ -571,7 +641,7 @@ flowchart TD
 
     RK -->|p2p:{open_id}| P2P["POST /im/v1/messages\nreceive_id_type=open_id"]
     RK -->|group:{chat_id}| GRP["POST /im/v1/messages\nreceive_id_type=chat_id"]
-    RK -->|thread:{thread_id}| THR["POST /im/v1/messages/:root_id/reply\nreply_in_thread=true"]
+    RK -->|thread:{chat_id}:{thread_id}| THR["POST /im/v1/messages/:root_id/reply\nreply_in_thread=true"]
 
     P2P & GRP & THR --> BODY["RequestBody\nmsg_type='text'\ncontent='{\"text\":\"...\"}'\nuuid={msg_id}  ← 幂等去重"]
     BODY --> RESP{API 响应}
@@ -601,6 +671,169 @@ CLEANUP_POLICIES = [
 ```
 
 详见 [11.2 存储清理策略](#112-存储清理策略)。
+
+---
+
+### 4.9 TestAPI（测试接口）
+
+**职责**：提供 HTTP 接口模拟飞书消息事件，绕过 WebSocket 直接注入 Runner，同步返回 Bot 回复。仅 `debug.enable_test_api: true` 时启用。
+
+**设计要点**：
+- 与 FeishuListener 入口等价：构造 InboundMessage → `Runner.dispatch()`
+- 通过可替换的 `FeishuSender` 接口捕获回复内容，同步返回给调用方
+- 支持模拟附件消息（提供本地文件路径，跳过飞书下载）
+- 集成测试可编排多轮对话、验证 session 隔离、测试 slash command
+
+**API 设计**：
+
+```
+POST /api/test/message         → 发送消息，同步等待 Bot 回复
+POST /api/test/message/async   → 发送消息，立即返回 msg_id，通过回调或轮询获取回复
+GET  /api/test/session/:routing_key → 查看当前 session 状态和对话历史
+DELETE /api/test/sessions       → 清空所有测试 session 数据
+```
+
+**核心接口伪代码**：
+
+```python
+# POST /api/test/message
+# 同步模式：注入消息 → 等待 Runner 处理完成 → 返回 Bot 回复
+
+class TestRequest(BaseModel):
+    routing_key: str              # 必填："p2p:ou_test001" 等
+    content: str = ""             # 用户消息文本
+    msg_id: str | None = None     # 可选，自动生成 "test_{uuid}"
+    sender_id: str = "ou_test001" # 模拟用户 open_id
+    attachment: TestAttachment | None = None  # 模拟附件
+
+class TestAttachment(BaseModel):
+    file_path: str                # 本地文件路径（非飞书 file_key）
+    file_name: str | None = None  # 文件名，默认取 file_path 的文件名
+
+class TestResponse(BaseModel):
+    msg_id: str                   # 请求消息 ID
+    reply: str                    # Bot 回复内容
+    session_id: str               # 使用的 session ID
+    duration_ms: int              # 处理耗时
+    skills_called: list[str]      # 调用的 Skill 列表
+```
+
+**实现架构**：
+
+```mermaid
+sequenceDiagram
+    participant T as 测试客户端
+    participant API as TestAPI Server
+    participant R as Runner
+    participant CS as CaptureSender
+
+    T->>API: POST /api/test/message
+    API->>API: 构造 InboundMessage
+    API->>API: 注册 Future (msg_id → asyncio.Future)
+
+    alt 有 attachment.file_path
+        API->>API: 复制本地文件到 session uploads/（跳过飞书下载）
+        API->>API: content 改写为文件路径提示
+    end
+
+    API->>R: dispatch(inbound)
+
+    Note over R: Runner 正常处理流程
+    R->>CS: send(routing_key, reply, root_id)
+    CS->>CS: 捕获 reply 内容
+    CS->>API: resolve Future(msg_id → reply)
+
+    API-->>T: TestResponse{reply, session_id, duration_ms, ...}
+```
+
+**CaptureSender — 可替换的发送层**：
+
+```python
+class SenderProtocol(Protocol):
+    """FeishuSender 和 CaptureSender 共同实现的协议"""
+    async def send(self, routing_key: str, content: str, root_id: str) -> None: ...
+
+class CaptureSender:
+    """测试模式下替换 FeishuSender，捕获回复到 Future"""
+    def __init__(self):
+        self._futures: dict[str, asyncio.Future] = {}  # msg_id → Future
+
+    def register(self, msg_id: str) -> asyncio.Future:
+        fut = asyncio.get_event_loop().create_future()
+        self._futures[msg_id] = fut
+        return fut
+
+    async def send(self, routing_key: str, content: str, root_id: str) -> None:
+        # root_id 即 InboundMessage.root_id == msg_id
+        if root_id in self._futures:
+            self._futures.pop(root_id).set_result(content)
+```
+
+**Runner 中的 Sender 注入**：
+
+```python
+class Runner:
+    def __init__(self, sender: SenderProtocol, ...):
+        self.sender = sender  # 生产: FeishuSender, 测试: CaptureSender
+```
+
+**测试模式下附件处理**：
+
+测试请求的 `attachment.file_path` 是本地主机路径（如 `./testdata/report.pdf`）。TestAPI 在构造 InboundMessage 前：
+1. 解析 routing_key → 获取当前 active session_id
+2. 将文件复制到 `data/workspace/sessions/{sid}/uploads/`
+3. 将 InboundMessage.content 改写为沙盒路径提示
+4. 不设置 `inbound.attachment`（跳过 Runner 的飞书下载步骤）
+
+**集成测试用例示例**：
+
+```python
+# tests/integration/test_file_processor.py
+
+async def test_pdf_to_docx():
+    """测试 PDF 转 Word 全流程"""
+    # 1. 发送文件消息
+    resp = await client.post("/api/test/message", json={
+        "routing_key": "p2p:ou_test001",
+        "content": "帮我把这个 PDF 转成 Word",
+        "attachment": {"file_path": "./testdata/sample.pdf"},
+    })
+    assert resp.status == 200
+    data = resp.json()
+    assert "转换完成" in data["reply"]
+    assert "file_processor" in data["skills_called"]
+
+    # 2. 验证产出文件存在
+    session_id = data["session_id"]
+    outputs = Path(f"data/workspace/sessions/{session_id}/outputs")
+    assert any(f.suffix == ".docx" for f in outputs.iterdir())
+
+async def test_new_session_isolates_history():
+    """测试 /new 命令切换 session 后历史隔离"""
+    key = "p2p:ou_test002"
+
+    # 1. 第一轮对话
+    r1 = await client.post("/api/test/message", json={
+        "routing_key": key, "content": "记住：我喜欢蓝色",
+    })
+    sid_1 = r1.json()["session_id"]
+
+    # 2. /new 切换 session
+    r2 = await client.post("/api/test/message", json={
+        "routing_key": key, "content": "/new",
+    })
+
+    # 3. 新 session 不应知道之前的偏好
+    r3 = await client.post("/api/test/message", json={
+        "routing_key": key, "content": "我喜欢什么颜色？",
+    })
+    sid_3 = r3.json()["session_id"]
+    assert sid_3 != sid_1  # session 已切换
+
+    # 4. 查看 session 状态
+    r4 = await client.get(f"/api/test/session/{key}")
+    assert r4.json()["active_session_id"] == sid_3
+```
 
 ---
 
@@ -647,14 +880,21 @@ class Sender:
 
 ```python
 @dataclass
+class Attachment:
+    msg_type:    str   # "image" | "file"
+    file_key:    str   # 飞书 file_key / image_key
+    file_name:   str   # 文件名（image 无文件名时用 "{image_key}.jpg"）
+
+@dataclass
 class InboundMessage:
-    routing_key: str          # "p2p:ou_xxx" | "group:xxx" | "thread:xxx"
-    content:     str          # 纯文本内容（已预处理：附件消息转为路径提示）
-    msg_id:      str          # 飞书 message_id（用于幂等、Trace）
-    root_id:     str          # 话题根消息 ID（thread 回复时用，非 thread 时 = msg_id）
-    sender_id:   str          # open_id（发送者）
-    ts:          int          # 创建时间（毫秒时间戳）
-    is_cron:     bool = False  # True = CronService 注入的 fake 消息
+    routing_key: str                    # "p2p:ou_xxx" | "group:oc_xxx" | "thread:oc_xxx:ot_xxx"
+    content:     str                    # 纯文本内容（附件消息时可为空）
+    msg_id:      str                    # 飞书 message_id（用于幂等、Trace、下载）
+    root_id:     str                    # 话题根消息 ID（thread 回复时用，非 thread 时 = msg_id）
+    sender_id:   str                    # open_id（发送者）
+    ts:          int                    # 创建时间（毫秒时间戳）
+    is_cron:     bool = False           # True = CronService 注入的 fake 消息
+    attachment:  Attachment | None = None  # 附件元信息（Runner 负责下载）
 ```
 
 ---
@@ -692,6 +932,17 @@ class InboundMessage:
         "message_count": 5
       }
     ]
+  },
+  "thread:oc_chat789:ot_topic001": {
+    "active_session_id": "s-uuid-004",
+    "sessions": [
+      {
+        "id": "s-uuid-004",
+        "created_at": "2026-01-22T11:00:00Z",
+        "verbose": false,
+        "message_count": 3
+      }
+    ]
   }
 }
 ```
@@ -713,6 +964,63 @@ class InboundMessage:
 {"type":"message","role":"user","content":"每周一9点给我发周报提醒","ts":1737001000,"feishu_msg_id":"om_yyy"}
 {"type":"message","role":"assistant","content":"已创建定时任务：每周一 09:00 生成并发送周报摘要。","ts":1737001010}
 ```
+
+#### 文件并发安全
+
+所有文件存储统一采用**文件锁 + 安全写入**策略：
+
+**1. index.json — `asyncio.Lock` + write-then-rename**
+
+index.json 是全局共享资源，多个 routing_key 的 worker 可能并发读写（如 `/new` 创建新 session）。
+
+```python
+class SessionManager:
+    def __init__(self, data_dir: Path):
+        self._index_lock = asyncio.Lock()  # 进程内并发控制
+
+    async def get_or_create(self, routing_key: str) -> SessionEntry:
+        async with self._index_lock:
+            index = self._read_index()
+            if routing_key not in index:
+                index[routing_key] = self._new_routing_entry()
+            self._write_index(index)
+            return ...
+
+    def _write_index(self, data: dict):
+        """write-then-rename：防止写入中途崩溃导致文件损坏"""
+        tmp_path = self._index_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        tmp_path.rename(self._index_path)  # 原子操作（同文件系统内）
+```
+
+**2. JSONL — `asyncio.Lock` per session + flush 保证**
+
+同一 session 的 JSONL 写入已被 Runner 的 per-routing_key 队列串行化，但 CronService 的 fake 消息也可能触发写入，因此仍需 per-session 锁。
+
+```python
+class SessionManager:
+    def __init__(self, data_dir: Path):
+        self._jsonl_locks: dict[str, asyncio.Lock] = {}  # session_id → Lock
+
+    async def append(self, session_id: str, **entries):
+        lock = self._jsonl_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            with open(self._jsonl_path(session_id), "a") as f:
+                for entry in self._build_entries(**entries):
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())  # 确保写入磁盘
+```
+
+**3. cron/tasks.json — 同 index.json 的 write-then-rename 模式**
+
+CronService 读、scheduler_mgr Skill 写，通过 `asyncio.Lock` 互斥。
+
+**设计原则**：
+- 进程内并发用 `asyncio.Lock`（单进程架构，无需跨进程文件锁）
+- 全量写入文件统一用 **write-then-rename**（原子性）
+- JSONL append 后 **flush + fsync**（持久性）
+- 如启动时发现 `.tmp` 文件残留，说明上次写入中途崩溃，忽略 `.tmp`（index.json 保持上次完整版本）
 
 ---
 
@@ -988,7 +1296,7 @@ async def download_attachment(
     message_id: str,
     content_json: str,     # EventMessage.content（JSON 字符串）
     msg_type: str,         # "image" | "file"
-    dest_dir: Path,        # session 的 uploads/ 目录
+    dest_dir: Path,        # session 的 workspace/sessions/{sid}/uploads/ 目录
 ) -> Path | None:
 
     content = json.loads(content_json)
@@ -1142,6 +1450,7 @@ def _make_step_callback(self, session: SessionEntry, routing_key: str):
 | **文件目录隔离** | 每个 session 独立工作目录，Sub-Crew 只注入自身 session 路径 |
 | **Bot 回复不走 Skill** | FeishuSender 在 Runner 层直接调用，不经过 Agent/Skill |
 | **幂等发送** | CreateMessage/Reply 均传入 uuid（飞书 message_id），防止网络重试重复发送 |
+| **测试 API 隔离** | `debug.enable_test_api` 默认关闭，绑定 127.0.0.1，生产环境不暴露 |
 
 ---
 
@@ -1165,8 +1474,11 @@ bot:
 
 agent:
   model: "qwen3-max"
-  max_iter: 50
+  max_iter: 50                    # 主 Agent 最大 ReAct 轮数（评测时调整）
   max_input_tokens: 30000
+  sub_agent_model: "qwen3-max"    # Sub-Crew Agent 模型（可与主 Agent 不同）
+  sub_agent_max_iter: 20          # Sub-Crew 最大轮数
+  timeout_s: 300                  # 单次 Agent 执行总超时（秒）
 
 skills:
   global_dir: "../skills"         # 全局 Skills 目录（跨 Workspace 共享）
@@ -1175,11 +1487,26 @@ skills:
 sandbox:
   url: "http://localhost:8080/mcp"
   workspace_dir: "/workspace"     # 沙盒内挂载路径
+  timeout_s: 120                  # 单次沙盒工具调用超时（秒）
+  max_retries: 2                  # 沙盒连接失败重试次数
 
 session:
   max_history_turns: 20           # 注入对话历史的最大轮数（MVP 简单截断）
 
+runner:
+  queue_idle_timeout_s: 300       # per-routing_key worker 空闲退出时间（秒）
+  max_queue_size: 10              # 单个 routing_key 队列上限，超出丢弃并提示用户
+
+sender:
+  max_retries: 3                  # 飞书消息发送重试次数
+  retry_backoff: [1, 2, 4]        # 指数退避（秒）
+
 data_dir: "./data"                # 运行时数据根目录
+
+debug:
+  enable_test_api: false          # 启用测试 API（仅开发/测试环境）
+  test_api_port: 9090             # 测试 API 监听端口
+  test_api_host: "127.0.0.1"     # 绑定地址（默认仅本地访问）
 ```
 
 ---
