@@ -101,7 +101,10 @@ xiaopaw/
 - **Session workspace** is mounted into Docker: `./data/workspace:/workspace` — Sub-Crew accesses files at `/workspace/sessions/{sid}/`
 - **SkillLoaderTool I/O** uses Pydantic models (`SkillLoaderInput` / `SkillResult`) with `errcode=0` for success
 - **All timeouts and limits are configurable** in `config.yaml` (agent max_iter, sandbox timeout, queue size, sender retries, etc.)
-- **Test API** (`debug.enable_test_api`) — HTTP endpoint simulates Feishu events via `POST /api/test/message`, injects into Runner with a `CaptureSender` that returns bot replies synchronously. Runner accepts a `SenderProtocol` (production: `FeishuSender`, test: `CaptureSender`).
+- **Test API** (`debug.enable_test_api`) — HTTP endpoint simulates Feishu events via `POST /api/test/message`, injects into Runner with a `CaptureSender` that returns bot replies synchronously. Runner accepts a `SenderProtocol` (production: `FeishuSender`, test: `CaptureSender`). Supports file attachment upload via `attachment.file_path` field.
+- **session_id security** — session_id never enters the LLM context (not in `tasks.yaml` template, not in `akickoff(inputs={})`). SkillLoaderTool holds it as `_session_id` PrivateAttr and injects only the actual path strings into tool descriptions. LLM cannot read or manipulate session_id.
+- **history_reader inline** — `history_reader` Skill is handled inline by SkillLoaderTool (no Sub-Crew, no sandbox). SkillLoaderTool receives the full history list via `history_all` constructor param and paginates from memory. LLM passes only `page` / `page_size`.
+- **feishu_ops script architecture** — feishu_ops Skill uses standalone Python scripts under `skills/feishu_ops/scripts/`. Each operation (send_text, send_image, send_file, read_doc, read_sheet, get_chat_members, list_events, create_event) is a separate script sharing `_feishu_auth.py`. All output JSON to stdout, exit 0. Credentials read from `/workspace/.config/feishu.json`.
 
 ## Data Formats
 
@@ -166,17 +169,25 @@ python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not san
 - `xiaopaw/agents/config/agents.yaml` — Orchestrator Agent 配置（role/goal/backstory/max_iter）
 - `xiaopaw/agents/config/tasks.yaml` — 主任务配置（description/expected_output）
 - `xiaopaw/cleanup/service.py` — CleanupService: 启动时 sweep + ensure_workspace_dirs + write_feishu_credentials
-- `xiaopaw/skills/history_reader/SKILL.md` — history_reader Skill（分页读取历史对话，reference 型）
-- `xiaopaw/skills/feishu_ops/SKILL.md` — feishu_ops Skill（飞书文档读取与消息发送，task 型）
+- `xiaopaw/skills/history_reader/SKILL.md` — history_reader Skill（内联分页读取历史，无需沙盒，v2.0）
+- `xiaopaw/skills/feishu_ops/SKILL.md` + `scripts/` — feishu_ops Skill（10个独立脚本：send_text/post/image/file, read_doc/sheet, get_chat_members, list/create_events；共享 _feishu_auth.py）
 - `xiaopaw/skills/scheduler_mgr/SKILL.md` — scheduler_mgr Skill（定时任务创建/查看/删除，task 型）
 - `xiaopaw/skills/pdf/` `docx/` `pptx/` `xlsx/` — 文件处理 Skills（task 型）
+- `tests/integration/test_file_pipeline.py` — 文件处理全链路集成测试（P1附件复制、P2文件意图识别、P3全链路）
+- `tests/unit/test_feishu_ops_scripts.py` — feishu_ops 脚本单元测试（30个，覆盖所有脚本）
 
-**Test stats**: 309 unit tests, 83.27% coverage ✅ | 50 integration tests
+**Test stats**: 349 unit tests, ~89% coverage ✅ | 29 integration tests (no-llm)
 
 ## Known Issues / Code Quality
 
-Last review: 2026-03-05. All CRITICAL and HIGH issues fixed. Remaining MEDIUM:
+Full report: run `/everything-claude-code:python-review` to re-evaluate.
+
+Last review: 2026-03-06. All CRITICAL and HIGH issues fixed. Remaining MEDIUM:
 
 | # | File | Issue | Status |
 |---|------|-------|--------|
 | M1 | `aliyun_llm.py:110-139` | `_normalize_multimodal_tool_result` 用脆弱字符串匹配检测图片 URL，易被注入破坏 | open |
+
+**Not yet implemented**:
+- `cleanup/service.py` — Storage cleanup by policy
+- `main.py` — 0% coverage (entry point, requires full service stack)

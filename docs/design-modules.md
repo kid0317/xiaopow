@@ -97,13 +97,27 @@ thread:oc_chat789:ot_x  →    s-uuid-005
 - tools: `[SkillLoaderTool(...)]` — 唯一工具
 - llm: `qwen3-max`，max_iter: 50
 
+**安全隔离原则**：`session_id` 不通过 LLM 上下文（task description / akickoff inputs）传递，仅由系统内部管理（`SkillLoaderTool._session_id` PrivateAttr）。LLM 只能看到注入 description 中的实际路径，无法获取或篡改 session_id 本身。
+
+**SkillLoaderTool 初始化参数**：
+
+| 参数 | 说明 |
+|------|------|
+| `session_id` | 当前会话 ID，注入沙盒路径（不传给 LLM） |
+| `sandbox_url` | AIO-Sandbox MCP 端点 URL |
+| `history_all` | 完整历史消息列表（供 history_reader 内联分页使用） |
+
 **SkillLoaderTool 工作原理**（渐进式披露）：
 
 ```mermaid
 flowchart TD
     CALL([Main Agent 调用 SkillLoaderTool]) --> PARSE["解析参数\nskill_name, task_context"]
-    PARSE --> FIND{skill_name 在\nload_skills.yaml 中?}
+    PARSE --> HR{skill_name ==\nhistory_reader?}
 
+    HR -->|是| INLINE["内联处理：从 _history_all 分页\n不启动 Sub-Crew，不依赖沙盒"]
+    INLINE --> RET
+
+    HR -->|否| FIND{skill_name 在\nload_skills.yaml 中?}
     FIND -->|否| ERR["建设性报错：\n'可用 Skills：xxx，请重新选择'"]
     FIND -->|是| TYPE{SKILL.md frontmatter\ntype 字段?}
 
@@ -121,6 +135,8 @@ flowchart TD
     INJECT --> RET
 ```
 
+**history_reader 内联处理**：当 `skill_name == "history_reader"` 时，SkillLoaderTool 直接从 `_history_all`（构造时由系统注入的完整历史）按 `page` / `page_size` 分页，返回 JSON 结果，不经过 Sub-Crew 或沙盒。LLM 只需传入分页参数，无需知道 session_id。
+
 ---
 
 ### 4.5 Sub-Crew 工厂
@@ -136,7 +152,7 @@ flowchart TD
 **设计要点**：
 - 每次 Skill 调用都构建**新实例**，防止状态污染
 - Sub-Crew 不注入 `step_callback`（verbose 只推主 Agent）
-- session_id 通过 task.description 注入，Agent 知道自己的工作目录
+- session 工作目录通过 `SkillLoaderTool._get_skill_instructions()` 注入到任务指令（sandbox_execution_directive），不经过 LLM 可见的 task inputs
 - Agent 配置：role=`{skill_name} 执行专家`，model=`qwen3-max`，max_iter=20
 - Task 期望输出：JSON 格式的 `SkillResult`（output_pydantic=SkillResult）
 
@@ -250,27 +266,26 @@ flowchart TD
 **API 端点**：
 
 ```
-POST /api/test/message         → 发送消息，同步等待 Bot 回复
-POST /api/test/message/async   → 发送消息，立即返回 msg_id，通过回调或轮询获取回复
-GET  /api/test/session/:routing_key → 查看当前 session 状态和对话历史
-DELETE /api/test/sessions       → 清空所有测试 session 数据
+POST /api/test/message    → 发送消息（含可选附件），同步等待 Bot 回复
+DELETE /api/test/sessions → 清空所有测试 session 数据
 ```
 
 **请求/响应结构**（核心字段）：
 
 ```
 TestRequest:
-  routing_key: str          # 必填："p2p:ou_test001" 等
-  content: str              # 用户消息文本
-  msg_id: str | None        # 可选，自动生成 "test_{uuid}"
-  sender_id: str            # 模拟用户 open_id
-  attachment.file_path: str # 本地文件路径（非飞书 file_key）
+  routing_key:          str          # 必填："p2p:ou_test001" 等
+  content:              str          # 用户消息文本
+  msg_id:               str | None   # 可选，自动生成 "test_{uuid}"
+  sender_id:            str          # 模拟用户 open_id
+  attachment.file_path: str          # 本地文件路径（非飞书 file_key）
+  attachment.file_name: str | None   # 可选，覆盖原始文件名
 
 TestResponse:
-  msg_id: str               # 请求消息 ID
-  reply: str                # Bot 回复内容
-  session_id: str           # 使用的 session ID
-  duration_ms: int          # 处理耗时
+  msg_id:        str        # 请求消息 ID
+  reply:         str        # Bot 回复内容
+  session_id:    str        # 使用的 session ID
+  duration_ms:   int        # 处理耗时
   skills_called: list[str]  # 调用的 Skill 列表
 ```
 
@@ -304,8 +319,47 @@ sequenceDiagram
 
 **CaptureSender**：实现 `SenderProtocol`（与 `FeishuSender` 共同接口），通过 `asyncio.Future` 捕获回复内容。Runner 构造时注入 `sender: SenderProtocol`，测试时替换为 `CaptureSender`。
 
-**测试模式下附件处理**：
+**测试模式下附件处理**（`_copy_attachment` 函数）：
 1. 解析 routing_key → 获取当前 active session_id
-2. 将文件复制到 `data/workspace/sessions/{sid}/uploads/`
-3. 将 InboundMessage.content 改写为沙盒路径提示
+2. 将文件复制到 `workspace_dir/sessions/{sid}/uploads/`（`workspace_dir` 在构建时注入，默认 `data/workspace`）
+3. 将 InboundMessage.content 改写为沙盒路径提示（`/workspace/sessions/{sid}/uploads/{filename}`）
 4. 不设置 `inbound.attachment`（跳过 Runner 的飞书下载步骤）
+
+---
+
+### 4.10 feishu_ops Skill 脚本架构
+
+feishu_ops Skill 采用**脚本化架构**：每类操作独立为一个 Python 脚本，Sub-Crew 通过 `sandbox_execute_bash` 直接调用。
+
+**脚本清单**（`skills/feishu_ops/scripts/`）：
+
+| 脚本 | 功能 | 关键参数 |
+|------|------|---------|
+| `_feishu_auth.py` | 共享鉴权模块（不直接调用） | — |
+| `send_text.py` | 发送纯文字消息 | `--routing_key`, `--text` |
+| `send_post.py` | 发送富文本消息（标题+多段落） | `--routing_key`, `--title`, `--paragraphs` |
+| `send_image.py` | 上传图片并发送 | `--routing_key`, `--image_path` |
+| `send_file.py` | 上传文件并发送 | `--routing_key`, `--file_path` |
+| `read_doc.py` | 读取飞书文档纯文本 | `--doc`（URL 或 token） |
+| `read_sheet.py` | 读取飞书电子表格 | `--sheet`, `--sheet_id`, `--range` |
+| `get_chat_members.py` | 获取群组成员列表 | `--chat_id` |
+| `list_events.py` | 查询日历事件 | `--calendar_id`, `--start_time`, `--end_time` |
+| `create_event.py` | 创建日历事件 | `--calendar_id`, `--summary`, `--start_time`, `--end_time` |
+
+**`_feishu_auth.py` 共享模块**（所有脚本通过 `sys.path.insert` 导入）：
+- `get_headers()` — 获取 tenant_access_token，返回 JSON 请求头
+- `get_auth_header()` — 仅含 Authorization（用于 multipart 上传）
+- `parse_routing_key(key)` — `"p2p:ou_xxx"` → `("open_id", "ou_xxx")`；`"group:oc_xxx"` → `("chat_id", "oc_xxx")`
+- `parse_doc_token(url_or_token)` — 从 URL 或直接 token 提取文档 token
+- `parse_sheet_token(url_or_token)` — 同上，针对表格
+- `output_ok(data)` — 打印 `{"errcode":0,"errmsg":"success","data":{...}}` 后 `sys.exit(0)`
+- `output_error(msg, hint)` — 打印 `{"errcode":1,"errmsg":"..."}` 后 `sys.exit(0)`
+- `check_feishu_resp(data, hint)` — 检查飞书 API 响应 code，非0时调用 `output_error`
+
+**设计原则**：
+- 所有脚本统一输出 JSON 到 stdout，退出码恒为 0（错误通过 errcode 字段区分）
+- 仅使用 tenant_access_token（应用级鉴权），无需 user_access_token
+- 凭证从 `/workspace/.config/feishu.json` 读取，不进入模型上下文
+- 图片/文件先上传获取 key，再发消息（两步走）
+- routing_key 支持 `p2p:ou_xxx`、`group:oc_xxx`、裸 `ou_xxx`、裸 `oc_xxx` 四种格式
+

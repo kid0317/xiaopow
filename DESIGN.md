@@ -53,15 +53,17 @@
 | `docx` | 任务型 | Word 文档读取与处理 |
 | `pptx` | 任务型 | PPT 文档读取与处理 |
 | `xlsx` | 任务型 | Excel 表格读取与处理 |
-| `feishu_ops` | 任务型 | 读云文档、向指定群/用户发消息 |
+| `feishu_ops` | 任务型 | 发文字/富文本/图片/文件消息；读云文档/表格；查群成员；管理日历 |
 | `scheduler_mgr` | 任务型 | 创建/查看/删除定时任务 |
-| `history_reader` | 参考型 | 分页读取历史对话记录 |
+| `history_reader` | 内联型 | 分页读取历史对话记录（SkillLoaderTool 内部处理，无需沙盒） |
 
 ### 1.4 实现状态
 
-全部功能模块已实现并通过测试（309 单元测试，83% 覆盖率；50 集成测试）。
+全部功能模块已实现并通过测试（349 单元测试，~89% 覆盖率；29 集成测试）。
 
 消息处理主链路已全面打通：飞书 WebSocket → FeishuListener → Runner → Main Agent（SkillLoaderTool）→ Sub-Crew（AIO-Sandbox）→ FeishuSender。所有 Skills 已实现。CleanupService、CronService、TestAPI、metrics 均已在 main.py 接入。
+
+feishu_ops Skill 采用脚本化架构（`scripts/` 目录下 10 个独立 Python 脚本），每类操作一个脚本，共享 `_feishu_auth.py` 鉴权模块，全部输出统一 JSON 格式到 stdout。
 
 ---
 

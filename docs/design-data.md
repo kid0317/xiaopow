@@ -204,7 +204,7 @@ data/workspace/
 
 **设计原则**：
 - 不同 session 目录完全隔离，Sub-Crew 只能访问自己 session 的目录
-- SkillLoaderTool 在 task.description 中注入 session 目录路径，Agent 无需记忆路径规则
+- SkillLoaderTool 在 `sandbox_execution_directive` 中注入实际的 session 目录路径，LLM 可以看到路径但无法获取或篡改 session_id 本身（session_id 不进入 akickoff inputs）
 
 ---
 
@@ -285,13 +285,13 @@ skills:
     type: task
     enabled: true
   - name: feishu_ops
-    type: task
+    type: task        # 脚本化架构：Sub-Crew 调用 scripts/ 下独立 Python 脚本
     enabled: true
   - name: scheduler_mgr
     type: task
     enabled: true
   - name: history_reader
-    type: reference
+    type: reference   # SkillLoaderTool 内联处理，不启动 Sub-Crew
     enabled: true
 ```
 
@@ -339,7 +339,9 @@ skills:
 | 字段 | 说明 |
 |------|------|
 | `skill_name` | 要调用的 Skill 名称，必须是 XML 摘要中 `<name>` 标签的值之一 |
-| `task_context` | 任务型：须包含输入路径、期望输出、输出路径、特殊要求四项；参考型：用户原始问题即可 |
+| `task_context` | 任务型：须包含子任务描述、期望输出格式、输入/输出路径（使用 SkillLoaderTool description 中展示的实际路径）、特殊要求；参考型：留空或传用户原始问题 |
+
+> **安全说明**：`task_context` 描述中不再出现 `{session_id}` 占位符，路径由 SkillLoaderTool description 直接告知 LLM，LLM 无需关心 session_id 本身。
 
 **SkillResult**：
 
@@ -349,3 +351,19 @@ skills:
 | `message` | str | 人类可读的结果摘要（主 Agent 直接用于回复用户） |
 | `data` | dict | 结构化结果数据（可选，默认 `{}`） |
 | `files` | list[str] | 产出文件在沙盒中的绝对路径列表（可选，默认 `[]`） |
+
+**history_reader 特殊格式**（内联返回，非 SkillResult）：
+
+```json
+{
+  "errcode": 0,
+  "message": "成功读取第 1 页，共 35 条消息，本页 20 条",
+  "data": {
+    "messages": [{"role": "user", "content": "..."}, ...],
+    "total": 35,
+    "page": 1,
+    "page_size": 20,
+    "total_pages": 2
+  }
+}
+```
