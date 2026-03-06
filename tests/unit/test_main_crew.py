@@ -271,9 +271,10 @@ class TestBuildAgentFn:
         with patch("xiaopaw.agents.main_crew._build_crew", return_value=mock_crew) as mock_build:
             await fn("user input", history, "s-123", "p2p:ou_abc", "om_123", False)
 
-        # _build_crew 应收到完整历史（供 history_reader 内联使用）
+        # _build_crew 应收到完整历史（供 history_reader 内联使用）和 routing_key
         build_kwargs = mock_build.call_args.kwargs
         assert build_kwargs["session_id"] == "s-123"
+        assert build_kwargs["routing_key"] == "p2p:ou_abc"
         assert build_kwargs["history_all"] is history
 
         inputs = mock_crew.akickoff.call_args.kwargs["inputs"]

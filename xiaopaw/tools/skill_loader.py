@@ -110,15 +110,19 @@ class SkillLoaderTool(BaseTool):
     # Pydantic 会把普通 dict 属性当作模型字段，用 PrivateAttr 绕开
     _session_id: str = PrivateAttr(default="")
     _sandbox_url: str = PrivateAttr(default="")
+    _routing_key: str = PrivateAttr(default="")
     _skill_registry: dict[str, Any] = PrivateAttr(default_factory=dict)
     _instruction_cache: dict[str, str] = PrivateAttr(default_factory=dict)
     _history_all: list = PrivateAttr(default_factory=list)
 
-    def __init__(self, session_id: str = "", sandbox_url: str = "", history_all: list | None = None) -> None:
+    def __init__(self, session_id: str = "", sandbox_url: str = "", routing_key: str = "", history_all: list | None = None) -> None:
         super().__init__()
         self._session_id = session_id
         # sandbox_url 透传给 build_skill_crew；空字符串时使用 skill_crew 模块的默认值
         self._sandbox_url = sandbox_url
+        # 💡 安全设计：routing_key（含 open_id / chat_id）由系统注入到 sandbox_execution_directive，
+        # Sub-Crew 可读取并用于 feishu_ops 发消息，不经过主 LLM 的 task inputs
+        self._routing_key = routing_key
         self._history_all = list(history_all) if history_all else []
         self._skill_registry = {}
         self._instruction_cache = {}
@@ -240,7 +244,9 @@ class SkillLoaderTool(BaseTool):
             f"当前 Session 工作目录（沙盒）：{_session_dir}/\n"
             f"  - 用户上传文件：{_session_dir}/uploads/（只读访问）\n"
             f"  - 输出文件目录：{_session_dir}/outputs/（读写，所有输出文件写在此处）\n"
-            f"  - 临时文件目录：{_session_dir}/tmp/（临时工作区）\n\n"
+            f"  - 临时文件目录：{_session_dir}/tmp/（临时工作区）\n"
+            f"当前用户 routing_key（飞书消息发送目标，feishu_ops 脚本的 --routing_key 参数）："
+            f"{self._routing_key if self._routing_key else '<由系统注入，如未显示请联系管理员>'}\n\n"
             f"可用沙盒工具及正确用法：\n"
             f"1. sandbox_execute_bash：执行 Shell 命令。参数：cmd（必填）、cwd（可选）、timeout（可选，秒）。\n"
             f"   - 运行脚本示例：cmd=\"python {_skill_base}/scripts/xxx.py 参数\"\n"

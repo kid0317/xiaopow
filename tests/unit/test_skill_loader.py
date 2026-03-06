@@ -69,10 +69,10 @@ def tmp_skills_dir(tmp_path: Path) -> Path:
     return skills_dir
 
 
-def _make_tool(tmp_skills_dir: Path, session_id: str = "sid-test") -> SkillLoaderTool:
+def _make_tool(tmp_skills_dir: Path, session_id: str = "sid-test", routing_key: str = "") -> SkillLoaderTool:
     """构建一个指向临时 skills 目录的 SkillLoaderTool。"""
     with patch("xiaopaw.tools.skill_loader._SKILLS_DIR", tmp_skills_dir):
-        tool = SkillLoaderTool(session_id=session_id)
+        tool = SkillLoaderTool(session_id=session_id, routing_key=routing_key)
     return tool
 
 
@@ -195,11 +195,12 @@ class TestGetSkillInstructions:
         assert "Ref Skill 操作指南" in instructions
 
     def test_sandbox_directive_appended(self, tmp_skills_dir: Path):
-        tool = _make_tool(tmp_skills_dir, session_id="sess-123")
+        tool = _make_tool(tmp_skills_dir, session_id="sess-123", routing_key="p2p:ou_abc")
         instructions = tool._get_skill_instructions("task_skill")
         assert "<sandbox_execution_directive>" in instructions
         assert "/workspace/sessions/sess-123/" in instructions
         assert "/mnt/skills/task_skill/" in instructions
+        assert "p2p:ou_abc" in instructions
 
     def test_result_cached(self, tmp_skills_dir: Path):
         tool = _make_tool(tmp_skills_dir)
@@ -372,3 +373,35 @@ class TestHistoryAllParam:
         with patch("xiaopaw.tools.skill_loader._SKILLS_DIR", tmp_skills_dir):
             tool = SkillLoaderTool(session_id="s", history_all=None)
         assert tool._history_all == []
+
+
+# ── routing_key PrivateAttr ───────────────────────────────────────────────────
+
+
+class TestRoutingKeyParam:
+    def test_default_empty(self, tmp_skills_dir: Path):
+        tool = _make_tool(tmp_skills_dir)
+        assert tool._routing_key == ""
+
+    def test_populated_from_init(self, tmp_skills_dir: Path):
+        tool = _make_tool(tmp_skills_dir, routing_key="p2p:ou_abc123")
+        assert tool._routing_key == "p2p:ou_abc123"
+
+    def test_group_routing_key(self, tmp_skills_dir: Path):
+        tool = _make_tool(tmp_skills_dir, routing_key="group:oc_xyz789")
+        assert tool._routing_key == "group:oc_xyz789"
+
+    def test_routing_key_in_sandbox_directive(self, tmp_skills_dir: Path):
+        """routing_key 应注入到 sandbox_execution_directive，供 Sub-Crew 使用。"""
+        tool = _make_tool(tmp_skills_dir, routing_key="p2p:ou_testuser")
+        instructions = tool._get_skill_instructions("task_skill")
+        assert "p2p:ou_testuser" in instructions
+        # 确保在 sandbox_execution_directive 标签内
+        directive_section = instructions.split("<sandbox_execution_directive>")[1]
+        assert "p2p:ou_testuser" in directive_section
+
+    def test_empty_routing_key_shows_placeholder(self, tmp_skills_dir: Path):
+        """未设置 routing_key 时，显示占位提示而非空字符串。"""
+        tool = _make_tool(tmp_skills_dir, routing_key="")
+        instructions = tool._get_skill_instructions("task_skill")
+        assert "<由系统注入" in instructions

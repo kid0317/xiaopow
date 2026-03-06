@@ -15,7 +15,7 @@
 设计要点：
 - 每次调用返回新实例，防止 CrewAI 内部状态污染
 - Sub-Crew 不注入 step_callback（verbose 只推主 Agent 的推理，避免话题噪音）
-- session_id 通过 task.description 注入，Agent 知道自己的沙盒工作目录
+- session 工作目录和用户 routing_key 通过 SkillLoaderTool 的 sandbox_execution_directive 注入，不经过主 LLM
 - 工具白名单：只开放 4 个沙盒工具，防止越权
 """
 
