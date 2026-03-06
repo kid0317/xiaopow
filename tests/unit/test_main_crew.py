@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from xiaopaw.agents.main_crew import (
+    _build_crew,
     _format_history,
+    _load_yaml,
     _make_step_callback,
     build_agent_fn,
 )
@@ -297,3 +300,119 @@ class TestBuildAgentFn:
         assert "msg9" in inputs["history"]
         # 早期的应该不在
         assert "msg0" not in inputs["history"]
+
+
+# ── _load_yaml ──────────────────────────────────────────────────
+
+
+class TestLoadYaml:
+    """_load_yaml 单元测试（覆盖 line 114）"""
+
+    def test_loads_yaml_file(self, tmp_path):
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text("key: value\nnum: 42", encoding="utf-8")
+        result = _load_yaml(yaml_file)
+        assert result == {"key": "value", "num": 42}
+
+    def test_empty_yaml_returns_empty_dict(self, tmp_path):
+        yaml_file = tmp_path / "empty.yaml"
+        yaml_file.write_text("", encoding="utf-8")
+        result = _load_yaml(yaml_file)
+        assert result == {}
+
+    def test_nested_yaml(self, tmp_path):
+        yaml_file = tmp_path / "nested.yaml"
+        yaml_file.write_text("parent:\n  child: hello", encoding="utf-8")
+        result = _load_yaml(yaml_file)
+        assert result == {"parent": {"child": "hello"}}
+
+
+# ── _build_crew ─────────────────────────────────────────────────
+
+
+class TestBuildCrew:
+    """_build_crew 单元测试（覆盖 lines 131-163）"""
+
+    def _mock_context(self):
+        """返回一组 patch 上下文，避免 CrewAI / LLM 初始化副作用。"""
+        return [
+            patch("xiaopaw.agents.main_crew.AliyunLLM"),
+            patch("xiaopaw.agents.main_crew.Agent"),
+            patch("xiaopaw.agents.main_crew.Task"),
+            patch("xiaopaw.agents.main_crew.Crew"),
+            patch("xiaopaw.agents.main_crew.IntermediateTool"),
+            patch("xiaopaw.tools.skill_loader.SkillLoaderTool"),
+        ]
+
+    def test_build_crew_returns_crew_instance(self):
+        with patch("xiaopaw.agents.main_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.main_crew.Agent"), \
+             patch("xiaopaw.agents.main_crew.Task"), \
+             patch("xiaopaw.agents.main_crew.Crew") as mock_crew_cls, \
+             patch("xiaopaw.agents.main_crew.IntermediateTool"), \
+             patch("xiaopaw.tools.skill_loader.SkillLoaderTool"):
+            result = _build_crew("test-session")
+            mock_crew_cls.assert_called_once()
+            assert result == mock_crew_cls.return_value
+
+    def test_build_crew_passes_session_id_to_skill_loader(self):
+        with patch("xiaopaw.agents.main_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.main_crew.Agent"), \
+             patch("xiaopaw.agents.main_crew.Task"), \
+             patch("xiaopaw.agents.main_crew.Crew"), \
+             patch("xiaopaw.agents.main_crew.IntermediateTool"), \
+             patch("xiaopaw.tools.skill_loader.SkillLoaderTool") as mock_loader:
+            _build_crew("my-session-id")
+            # SkillLoaderTool 应以 session_id 构建
+            call_kwargs = mock_loader.call_args.kwargs
+            assert call_kwargs.get("session_id") == "my-session-id"
+
+    def test_build_crew_passes_sandbox_url_when_provided(self):
+        with patch("xiaopaw.agents.main_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.main_crew.Agent"), \
+             patch("xiaopaw.agents.main_crew.Task"), \
+             patch("xiaopaw.agents.main_crew.Crew"), \
+             patch("xiaopaw.agents.main_crew.IntermediateTool"), \
+             patch("xiaopaw.tools.skill_loader.SkillLoaderTool") as mock_loader:
+            _build_crew("s-001", sandbox_url="http://sandbox:8022/mcp")
+            call_kwargs = mock_loader.call_args.kwargs
+            assert call_kwargs.get("sandbox_url") == "http://sandbox:8022/mcp"
+
+    def test_build_crew_no_sandbox_url_not_passed(self):
+        with patch("xiaopaw.agents.main_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.main_crew.Agent"), \
+             patch("xiaopaw.agents.main_crew.Task"), \
+             patch("xiaopaw.agents.main_crew.Crew"), \
+             patch("xiaopaw.agents.main_crew.IntermediateTool"), \
+             patch("xiaopaw.tools.skill_loader.SkillLoaderTool") as mock_loader:
+            _build_crew("s-001", sandbox_url="")
+            call_kwargs = mock_loader.call_args.kwargs
+            # sandbox_url 为空时不传
+            assert "sandbox_url" not in call_kwargs
+
+    def test_build_crew_with_extra_tools(self):
+        extra_tool = MagicMock()
+        with patch("xiaopaw.agents.main_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.main_crew.Agent") as mock_agent_cls, \
+             patch("xiaopaw.agents.main_crew.Task"), \
+             patch("xiaopaw.agents.main_crew.Crew"), \
+             patch("xiaopaw.agents.main_crew.IntermediateTool"), \
+             patch("xiaopaw.tools.skill_loader.SkillLoaderTool"):
+            _build_crew("s-001", extra_tools=[extra_tool])
+            # extra_tool 应出现在 Agent tools 中
+            tools_arg = mock_agent_cls.call_args.kwargs.get("tools") or \
+                        mock_agent_cls.call_args.args[0] if mock_agent_cls.call_args.args else []
+            agent_tools = mock_agent_cls.call_args.kwargs.get("tools", [])
+            assert extra_tool in agent_tools
+
+    def test_build_crew_with_step_callback(self):
+        step_cb = MagicMock()
+        with patch("xiaopaw.agents.main_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.main_crew.Agent"), \
+             patch("xiaopaw.agents.main_crew.Task"), \
+             patch("xiaopaw.agents.main_crew.Crew") as mock_crew_cls, \
+             patch("xiaopaw.agents.main_crew.IntermediateTool"), \
+             patch("xiaopaw.tools.skill_loader.SkillLoaderTool"):
+            _build_crew("s-001", step_callback=step_cb)
+            crew_kwargs = mock_crew_cls.call_args.kwargs
+            assert crew_kwargs.get("step_callback") == step_cb

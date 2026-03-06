@@ -27,7 +27,7 @@ skills:
   local_dir: "./skills"
 
 sandbox:
-  url: "http://localhost:8080/mcp"
+  url: "http://localhost:8022/mcp"   # sandbox-docker-compose.yaml 映射 8022:8080
   workspace_dir: "/workspace"
   timeout_s: 120
   max_retries: 2

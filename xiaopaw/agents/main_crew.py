@@ -118,6 +118,7 @@ def _build_crew(
     session_id: str,
     step_callback: Any | None = None,
     extra_tools: list | None = None,
+    sandbox_url: str = "",
 ) -> Crew:
     """构建主 Crew 实例（每次调用返回新实例，防止状态污染）。
 
@@ -125,6 +126,7 @@ def _build_crew(
         session_id: 当前会话 ID（注入到 Agent backstory 和 Task 路径）
         step_callback: verbose 模式回调，None 表示关闭
         extra_tools: 额外注入的工具（测试用）
+        sandbox_url: AIO-Sandbox MCP 端点 URL，空字符串时使用 SkillLoaderTool 默认值
     """
     agents_cfg = _load_yaml(_CONFIG_DIR / "agents.yaml")
     tasks_cfg = _load_yaml(_CONFIG_DIR / "tasks.yaml")
@@ -136,7 +138,10 @@ def _build_crew(
     try:
         from xiaopaw.tools.skill_loader import SkillLoaderTool  # noqa: PLC0415
 
-        tools.append(SkillLoaderTool(session_id=session_id))
+        loader_kwargs: dict = {"session_id": session_id}
+        if sandbox_url:
+            loader_kwargs["sandbox_url"] = sandbox_url
+        tools.append(SkillLoaderTool(**loader_kwargs))
     except ImportError:
         logger.warning("SkillLoaderTool not available, running without it")
     tools.append(IntermediateTool())
@@ -170,12 +175,14 @@ def _build_crew(
 def build_agent_fn(
     sender: SenderProtocol,
     max_history_turns: int = _DEFAULT_MAX_HISTORY_TURNS,
+    sandbox_url: str = "",
 ) -> AgentFn:
     """工厂：返回 Runner 可用的 agent_fn 闭包。
 
     Args:
         sender: 用于 verbose 模式推送推理过程的 Feishu Sender
         max_history_turns: 注入 task 的最大历史条数，超出部分由 history_reader Skill 查询
+        sandbox_url: AIO-Sandbox MCP 端点 URL（空字符串时使用默认值）
 
     Returns:
         agent_fn(user_message, history, session_id, routing_key, root_id, verbose) → str
@@ -192,7 +199,11 @@ def build_agent_fn(
         step_cb = (
             _make_step_callback(sender, routing_key, root_id) if verbose else None
         )
-        crew = _build_crew(session_id=session_id, step_callback=step_cb)
+        crew = _build_crew(
+            session_id=session_id,
+            step_callback=step_cb,
+            sandbox_url=sandbox_url,
+        )
 
         result = await crew.akickoff(
             inputs={
