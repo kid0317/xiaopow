@@ -65,8 +65,8 @@ class SkillLoaderInput(BaseModel):
             "各字段必须有明确描述和示例。有两个必选字段errcode和errmsg：errcode为0表示成功，"
             "非0表示失败；errmsg成功时固定返回\"success\"，失败时必须包括错误信息、错误原因和建议的下一步解决方案。\n"
             "3. （可选）如果有完成任务的参考步骤和方法，可以提供对应描述\n"
-            "4. （可选）输入文件请使用沙盒绝对路径（如 /workspace/sessions/{session_id}/uploads/report.pdf）\n"
-            "5. （可选）输出文件请写到 /workspace/sessions/{session_id}/outputs/ 目录下\n"
+            "4. （可选）输入文件请使用沙盒绝对路径（路径来自工具描述中的当前 session 工作目录）\n"
+            "5. （可选）输出文件请写到 session 工作目录下的 outputs/ 目录\n"
             "6. （可选）如有其它特殊要求，可在此处提供\n"
             "提供信息越完整，Skill 执行越精准。"
         ),
@@ -100,12 +100,14 @@ class SkillLoaderTool(BaseTool):
     _sandbox_url: str = PrivateAttr(default="")
     _skill_registry: dict[str, Any] = PrivateAttr(default_factory=dict)
     _instruction_cache: dict[str, str] = PrivateAttr(default_factory=dict)
+    _history_all: list = PrivateAttr(default_factory=list)
 
-    def __init__(self, session_id: str = "", sandbox_url: str = "") -> None:
+    def __init__(self, session_id: str = "", sandbox_url: str = "", history_all: list | None = None) -> None:
         super().__init__()
         self._session_id = session_id
         # sandbox_url 透传给 build_skill_crew；空字符串时使用 skill_crew 模块的默认值
         self._sandbox_url = sandbox_url
+        self._history_all = list(history_all) if history_all else []
         self._skill_registry = {}
         self._instruction_cache = {}
         self._build_description()
@@ -245,8 +247,55 @@ class SkillLoaderTool(BaseTool):
 
     # ── Sub-Crew 执行（任务型 Skill）────────────────────────────────────────
 
+    def _handle_history_reader(self, task_context: str) -> str:
+        """内联处理 history_reader：从 _history_all 分页读取，无需沙盒或 session_id。
+
+        Args:
+            task_context: JSON 字符串，支持 page（页码，从1开始）和 page_size（每页条数）
+
+        Returns:
+            SkillResult JSON 字符串
+        """
+        try:
+            params = json.loads(task_context) if task_context.strip().startswith("{") else {}
+        except (json.JSONDecodeError, Exception):
+            params = {}
+
+        page = max(1, int(params.get("page", 1)))
+        page_size = max(1, min(50, int(params.get("page_size", 20))))
+
+        all_msgs = self._history_all
+        total = len(all_msgs)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_msgs = all_msgs[start:end]
+
+        messages = [
+            {"role": m.role, "content": m.content}
+            for m in page_msgs
+        ]
+
+        result = {
+            "errcode": 0,
+            "message": f"成功读取第 {page} 页，共 {total} 条消息，本页 {len(messages)} 条",
+            "data": {
+                "messages": messages,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+            },
+        }
+        return json.dumps(result, ensure_ascii=False)
+
     async def _execute_skill_async(self, skill_name: str, task_context: str) -> str:
         """核心执行路径：加载指令，按 type 分流。"""
+        # 💡 安全设计：history_reader 内联处理，从系统维护的 _history_all 读取，
+        # 不依赖沙盒、不暴露 session_id 给 LLM
+        if skill_name == "history_reader":
+            return self._handle_history_reader(task_context)
         skill_info = self._skill_registry[skill_name]
         instructions = self._get_skill_instructions(skill_name)
 

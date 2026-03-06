@@ -268,12 +268,18 @@ class TestBuildAgentFn:
             MessageEntry(role="assistant", content="earlier answer", ts=2000),
         ]
 
-        with patch("xiaopaw.agents.main_crew._build_crew", return_value=mock_crew):
+        with patch("xiaopaw.agents.main_crew._build_crew", return_value=mock_crew) as mock_build:
             await fn("user input", history, "s-123", "p2p:ou_abc", "om_123", False)
+
+        # _build_crew 应收到完整历史（供 history_reader 内联使用）
+        build_kwargs = mock_build.call_args.kwargs
+        assert build_kwargs["session_id"] == "s-123"
+        assert build_kwargs["history_all"] is history
 
         inputs = mock_crew.akickoff.call_args.kwargs["inputs"]
         assert inputs["user_message"] == "user input"
-        assert inputs["session_id"] == "s-123"
+        # session_id 不再通过 akickoff inputs 传入 LLM（安全隔离，由系统内部管理）
+        assert "session_id" not in inputs
         assert "earlier message" in inputs["history"]
 
     async def test_history_truncation_applied(self):

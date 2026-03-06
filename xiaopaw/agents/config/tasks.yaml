@@ -1,12 +1,9 @@
 # XiaoPaw 主任务配置
-# description 中的 {session_id}, {history}, {user_message} 由 crew.akickoff(inputs=...) 注入
+# description 中的 {history}, {user_message} 由 crew.akickoff(inputs=...) 注入
+# 注意：session_id 不通过模板注入，由系统内部管理（安全隔离）
 
 main_task:
   description: |
-    【对话上下文】
-    Session ID: {session_id}
-    沙盒工作目录: /workspace/sessions/{session_id}/
-
     【历史对话】
     {history}
 
@@ -15,7 +12,7 @@ main_task:
 
     请理解用户需求并完成任务。如需专业能力（搜索、文件处理、飞书操作等），
     通过 SkillLoaderTool 加载合适的 Skill。如需查询更多历史对话，
-    可使用 history_reader Skill（支持分页读取，参数：session_id, page, page_size）。
+    可使用 history_reader Skill（支持分页读取，参数：page, page_size）。
 
   expected_output: |
     以 JSON 格式返回，包含以下字段：

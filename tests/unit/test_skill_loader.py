@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from xiaopaw.session.models import MessageEntry
 from xiaopaw.tools.skill_loader import SkillLoaderInput, SkillLoaderTool
 
 
@@ -259,3 +260,115 @@ class TestRunDispatch:
         result = tool._run(skill_name="ref_skill", task_context="")
         assert "skill_instructions" in result
         assert "Ref Skill 操作指南" in result
+
+
+# ── _handle_history_reader ────────────────────────────────────────────────────
+
+
+def _make_msg(role: str, content: str) -> MessageEntry:
+    return MessageEntry(role=role, content=content, ts=0)
+
+
+class TestHandleHistoryReader:
+    """验证 history_reader 内联处理逻辑（无沙盒、无 session_id）。"""
+
+    def _tool_with_history(self, tmp_skills_dir: Path, n: int) -> SkillLoaderTool:
+        history = [_make_msg("user" if i % 2 == 0 else "assistant", f"msg-{i}") for i in range(n)]
+        with patch("xiaopaw.tools.skill_loader._SKILLS_DIR", tmp_skills_dir):
+            tool = SkillLoaderTool(session_id="sid", history_all=history)
+        return tool
+
+    def test_empty_history(self, tmp_skills_dir: Path):
+        tool = self._tool_with_history(tmp_skills_dir, 0)
+        import json
+        result = json.loads(tool._handle_history_reader(""))
+        assert result["errcode"] == 0
+        assert result["data"]["total"] == 0
+        assert result["data"]["messages"] == []
+
+    def test_first_page(self, tmp_skills_dir: Path):
+        import json
+        tool = self._tool_with_history(tmp_skills_dir, 35)
+        result = json.loads(tool._handle_history_reader('{"page": 1, "page_size": 20}'))
+        assert result["errcode"] == 0
+        assert result["data"]["total"] == 35
+        assert len(result["data"]["messages"]) == 20
+        assert result["data"]["page"] == 1
+        assert result["data"]["total_pages"] == 2
+        # 第一页应包含最旧的消息
+        assert result["data"]["messages"][0]["content"] == "msg-0"
+
+    def test_second_page(self, tmp_skills_dir: Path):
+        import json
+        tool = self._tool_with_history(tmp_skills_dir, 35)
+        result = json.loads(tool._handle_history_reader('{"page": 2, "page_size": 20}'))
+        assert len(result["data"]["messages"]) == 15  # 35 - 20
+
+    def test_page_size_capped_at_50(self, tmp_skills_dir: Path):
+        import json
+        tool = self._tool_with_history(tmp_skills_dir, 100)
+        result = json.loads(tool._handle_history_reader('{"page": 1, "page_size": 999}'))
+        assert len(result["data"]["messages"]) == 50
+
+    def test_invalid_json_uses_defaults(self, tmp_skills_dir: Path):
+        import json
+        tool = self._tool_with_history(tmp_skills_dir, 5)
+        result = json.loads(tool._handle_history_reader("自然语言描述，无json"))
+        assert result["errcode"] == 0
+        assert result["data"]["page"] == 1
+        assert result["data"]["page_size"] == 20
+
+    def test_message_roles_preserved(self, tmp_skills_dir: Path):
+        import json
+        history = [
+            _make_msg("user", "用户问题"),
+            _make_msg("assistant", "助手回答"),
+        ]
+        with patch("xiaopaw.tools.skill_loader._SKILLS_DIR", tmp_skills_dir):
+            tool = SkillLoaderTool(session_id="s", history_all=history)
+        result = json.loads(tool._handle_history_reader(""))
+        msgs = result["data"]["messages"]
+        assert msgs[0] == {"role": "user", "content": "用户问题"}
+        assert msgs[1] == {"role": "assistant", "content": "助手回答"}
+
+    @pytest.mark.asyncio
+    async def test_arun_history_reader_intercepted(self, tmp_skills_dir: Path):
+        """history_reader 调用应被内联拦截，不触发 Sub-Crew。"""
+        import json
+        # 注册 history_reader 为 reference 类型
+        (tmp_skills_dir / "history_reader").mkdir(exist_ok=True)
+        (tmp_skills_dir / "history_reader" / "SKILL.md").write_text(
+            "---\nname: history_reader\ndescription: 读取历史\ntype: reference\nversion: \"2.0\"\n---\n内容\n"
+        )
+        (tmp_skills_dir / "load_skills.yaml").write_text(
+            "skills:\n  - name: history_reader\n    type: reference\n    enabled: true\n"
+        )
+        history = [_make_msg("user", "早期消息")]
+        with patch("xiaopaw.tools.skill_loader._SKILLS_DIR", tmp_skills_dir):
+            tool = SkillLoaderTool(session_id="s", history_all=history)
+
+        result = await tool._arun(skill_name="history_reader", task_context='{"page": 1}')
+        parsed = json.loads(result)
+        assert parsed["errcode"] == 0
+        assert parsed["data"]["messages"][0]["content"] == "早期消息"
+
+
+# ── history_all parameter ─────────────────────────────────────────────────────
+
+
+class TestHistoryAllParam:
+    def test_default_empty(self, tmp_skills_dir: Path):
+        tool = _make_tool(tmp_skills_dir)
+        assert tool._history_all == []
+
+    def test_populated_from_init(self, tmp_skills_dir: Path):
+        history = [_make_msg("user", "hello"), _make_msg("assistant", "world")]
+        with patch("xiaopaw.tools.skill_loader._SKILLS_DIR", tmp_skills_dir):
+            tool = SkillLoaderTool(session_id="s", history_all=history)
+        assert len(tool._history_all) == 2
+        assert tool._history_all[0].content == "hello"
+
+    def test_none_history_all_gives_empty_list(self, tmp_skills_dir: Path):
+        with patch("xiaopaw.tools.skill_loader._SKILLS_DIR", tmp_skills_dir):
+            tool = SkillLoaderTool(session_id="s", history_all=None)
+        assert tool._history_all == []

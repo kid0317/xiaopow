@@ -116,6 +116,7 @@ def _load_yaml(path: Path) -> dict:
 
 def _build_crew(
     session_id: str,
+    history_all: list | None = None,
     step_callback: Any | None = None,
     extra_tools: list | None = None,
     sandbox_url: str = "",
@@ -123,7 +124,8 @@ def _build_crew(
     """构建主 Crew 实例（每次调用返回新实例，防止状态污染）。
 
     Args:
-        session_id: 当前会话 ID（注入到 Agent backstory 和 Task 路径）
+        session_id: 当前会话 ID（注入到 SkillLoaderTool，不传入 LLM 上下文）
+        history_all: 完整历史消息列表（供 history_reader Skill 内联分页使用）
         step_callback: verbose 模式回调，None 表示关闭
         extra_tools: 额外注入的工具（测试用）
         sandbox_url: AIO-Sandbox MCP 端点 URL，空字符串时使用 SkillLoaderTool 默认值
@@ -139,6 +141,8 @@ def _build_crew(
         from xiaopaw.tools.skill_loader import SkillLoaderTool  # noqa: PLC0415
 
         loader_kwargs: dict = {"session_id": session_id}
+        if history_all is not None:
+            loader_kwargs["history_all"] = history_all
         if sandbox_url:
             loader_kwargs["sandbox_url"] = sandbox_url
         tools.append(SkillLoaderTool(**loader_kwargs))
@@ -201,6 +205,7 @@ def build_agent_fn(
         )
         crew = _build_crew(
             session_id=session_id,
+            history_all=history,
             step_callback=step_cb,
             sandbox_url=sandbox_url,
         )
@@ -208,7 +213,6 @@ def build_agent_fn(
         result = await crew.akickoff(
             inputs={
                 "user_message": user_message,
-                "session_id": session_id,
                 "history": _format_history(history, max_turns=max_history_turns),
             }
         )
