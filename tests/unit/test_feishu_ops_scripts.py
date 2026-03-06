@@ -500,6 +500,7 @@ class TestCreateDoc:
         assert out["data"]["document_id"] == "doc_test_001"
         assert out["data"]["title"] == "季度报告"
         assert "doc_test_001" in out["data"]["url"]
+        assert out["data"]["blocks_written"] == 0
 
     def test_creates_doc_with_folder_token(self, capsys):
         api_resp = _make_api_resp(data={"document": {"document_id": "doc_folder_001"}})
@@ -527,6 +528,89 @@ class TestCreateDoc:
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 1
         assert "99991400" in out["errmsg"]
+
+    def test_creates_doc_with_markdown_content(self, capsys):
+        """带 --content 时额外调用 blocks 写入接口（再多 1 次 POST）。"""
+        create_resp = _make_api_resp(data={"document": {"document_id": "doc_md_001"}})
+        blocks_resp = _make_api_resp(data={"children": []})
+        md = "# 标题\n\n正文段落\n\n- 列表项A\n- 列表项B"
+        argv = ["--title", "MD文档", "--content", md]
+        with patch("sys.argv", ["create_doc.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                # POST 顺序：token(create) + create_doc + token(write) + write_blocks
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), create_resp,
+                    _make_token_resp(), blocks_resp,
+                ]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["document_id"] == "doc_md_001"
+        assert out["data"]["blocks_written"] > 0
+
+    def test_md_to_blocks_all_types(self):
+        """_md_to_blocks 应正确解析标题/无序/有序/代码块/段落。"""
+        md = (
+            "# 一级标题\n"
+            "## 二级标题\n"
+            "### 三级标题\n"
+            "- 无序项目\n"
+            "* 无序项目2\n"
+            "1. 有序项目\n"
+            "2. 有序项目2\n"
+            "```\ncode line\n```\n"
+            "普通段落"
+        )
+        blocks = self.mod._md_to_blocks(md)
+        btypes = [b["block_type"] for b in blocks]
+        # 3=h1, 4=h2, 5=h3, 12=bullet×2, 13=ordered×2, 14=code, 2=text
+        assert 3 in btypes    # heading1
+        assert 4 in btypes    # heading2
+        assert 5 in btypes    # heading3
+        assert 12 in btypes   # bullet
+        assert 13 in btypes   # ordered
+        assert 14 in btypes   # code
+        assert 2 in btypes    # text paragraph
+
+    def test_md_to_blocks_skips_empty_lines(self):
+        """空行不应产生 block。"""
+        md = "\n\n\n# 仅标题\n\n\n"
+        blocks = self.mod._md_to_blocks(md)
+        assert len(blocks) == 1
+        assert blocks[0]["block_type"] == 3
+
+    def test_creates_doc_with_content_file(self, capsys, tmp_path):
+        """--content_file 应从文件读取 Markdown 内容。"""
+        md_file = tmp_path / "report.md"
+        md_file.write_text("# 报告标题\n\n正文内容", encoding="utf-8")
+        create_resp = _make_api_resp(data={"document": {"document_id": "doc_file_001"}})
+        blocks_resp = _make_api_resp(data={"children": []})
+        argv = ["--title", "文件文档", "--content_file", str(md_file)]
+        with patch("sys.argv", ["create_doc.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), create_resp,
+                    _make_token_resp(), blocks_resp,
+                ]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["blocks_written"] > 0
+
+    def test_content_file_not_found_returns_error(self, capsys):
+        """--content_file 不存在应返回 errcode=1。"""
+        create_resp = _make_api_resp(data={"document": {"document_id": "doc_err_001"}})
+        argv = ["--title", "文件不存在", "--content_file", "/nonexistent/report.md"]
+        with patch("sys.argv", ["create_doc.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), create_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "读取内容文件失败" in out["errmsg"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -867,3 +951,154 @@ class TestWriteBitableRecords:
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 1
         assert "空" in out["errmsg"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# upload_sheet.py 测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUploadSheet:
+    """测试 upload_sheet.py：本地 xlsx 文件导入为飞书电子表格。"""
+
+    def setup_method(self):
+        self.mod = _import_script("upload_sheet")
+
+    def _make_upload_resp(self, file_token: str = "ftoken_001") -> MagicMock:
+        """构造 upload_all 接口响应。"""
+        m = MagicMock()
+        m.json.return_value = {"code": 0, "data": {"file_token": file_token}}
+        return m
+
+    def _make_import_task_resp(self, ticket: str = "ticket_001") -> MagicMock:
+        """构造 import_tasks 创建响应。"""
+        m = MagicMock()
+        m.json.return_value = {"code": 0, "data": {"ticket": ticket}}
+        return m
+
+    def _make_poll_resp(
+        self,
+        status: int = 0,
+        token: str = "sht_imported_001",
+        url: str = "https://xxx.feishu.cn/sheets/sht_imported_001",
+    ) -> MagicMock:
+        """构造 import_tasks/{ticket} GET 轮询响应。"""
+        m = MagicMock()
+        m.json.return_value = {
+            "code": 0,
+            "data": {
+                "result": {
+                    "job_status": status,
+                    "token": token,
+                    "url": url,
+                }
+            },
+        }
+        return m
+
+    def test_uploads_and_imports_xlsx(self, capsys, tmp_path):
+        """全链路：上传 xlsx → 创建导入任务 → 轮询成功。"""
+        xlsx = tmp_path / "data.xlsx"
+        xlsx.write_bytes(b"PK\x03\x04")  # 最小伪 xlsx 文件头
+
+        argv = ["--file_path", str(xlsx)]
+        with patch("sys.argv", ["upload_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                # POST 顺序：token(upload) + upload_all + token(import_task) + import_task + token(poll)
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(),           # upload_all: get_auth_header → token
+                    self._make_upload_resp(),      # upload_all: actual response
+                    _make_token_resp(),            # import_tasks: get_headers → token
+                    self._make_import_task_resp(), # import_tasks: actual response
+                    _make_token_resp(),            # poll: get_headers → token
+                ]):
+                    with patch("requests.get", return_value=self._make_poll_resp()):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["spreadsheet_token"] == "sht_imported_001"
+        assert "sht_imported_001" in out["data"]["url"]
+        assert out["data"]["file_size"] > 0
+
+    def test_uses_title_as_file_name(self, capsys, tmp_path):
+        """--title 指定时，导入任务中文件名应使用该 title。"""
+        xlsx = tmp_path / "raw.xlsx"
+        xlsx.write_bytes(b"PK\x03\x04")
+
+        argv = ["--file_path", str(xlsx), "--title", "销售报告"]
+        with patch("sys.argv", ["upload_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), self._make_upload_resp(),
+                    _make_token_resp(), self._make_import_task_resp(),
+                    _make_token_resp(),  # poll token
+                ]) as mock_post:
+                    with patch("requests.get", return_value=self._make_poll_resp()):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
+        # import_tasks 请求（第4次 POST）的 json 应含正确 file_name
+        import_call = mock_post.call_args_list[3]
+        assert import_call.kwargs["json"]["file_name"] == "销售报告.xlsx"
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["title"] == "销售报告.xlsx"
+
+    def test_unsupported_file_format_returns_error(self, capsys, tmp_path):
+        """非 xlsx/xls 文件应返回 errcode=1。"""
+        csv = tmp_path / "data.csv"
+        csv.write_text("a,b,c\n1,2,3")
+
+        argv = ["--file_path", str(csv)]
+        with patch("sys.argv", ["upload_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", return_value=_make_token_resp()):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert ".csv" in out["errmsg"]
+
+    def test_nonexistent_file_returns_error(self, capsys):
+        """不存在的文件路径应返回 errcode=1。"""
+        argv = ["--file_path", "/nonexistent/data.xlsx"]
+        with patch("sys.argv", ["upload_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", return_value=_make_token_resp()):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "不存在" in out["errmsg"]
+
+    def test_import_task_failure_returns_error(self, capsys, tmp_path):
+        """导入任务 job_status=3（失败）时应返回 errcode=1。"""
+        xlsx = tmp_path / "bad.xlsx"
+        xlsx.write_bytes(b"PK\x03\x04")
+
+        fail_poll = MagicMock()
+        fail_poll.json.return_value = {
+            "code": 0,
+            "data": {
+                "result": {
+                    "job_status": 3,
+                    "job_error_msg": "文件格式损坏",
+                    "token": "",
+                    "url": "",
+                }
+            },
+        }
+        argv = ["--file_path", str(xlsx)]
+        with patch("sys.argv", ["upload_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), self._make_upload_resp(),
+                    _make_token_resp(), self._make_import_task_resp(),
+                    _make_token_resp(),  # poll token
+                ]):
+                    with patch("requests.get", return_value=fail_poll):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "导入任务失败" in out["errmsg"]

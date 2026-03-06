@@ -121,6 +121,7 @@ class TestCreateDocLive:
         assert out["errcode"] == 0, f"创建文档失败：{out['errmsg']}"
         assert out["data"]["document_id"], "document_id 不能为空"
         assert out["data"]["url"], "url 不能为空"
+        assert out["data"]["blocks_written"] == 0
 
     def test_title_preserved_in_response(self, feishu_token, auth_mod, capsys):
         """返回的 title 字段应与入参一致。"""
@@ -130,6 +131,29 @@ class TestCreateDocLive:
 
         assert out["errcode"] == 0
         assert out["data"]["title"] == title
+
+    def test_creates_doc_with_markdown_content(self, feishu_token, auth_mod, capsys):
+        """带 --content 创建：文档应写入指定 Markdown 内容，blocks_written > 0。"""
+        md = (
+            "# 测试报告\n\n"
+            "## 一、概述\n\n"
+            "这是一份集成测试生成的文档。\n\n"
+            "- 要点 A\n"
+            "- 要点 B\n\n"
+            "1. 步骤一\n"
+            "2. 步骤二\n\n"
+            "```\nprint('hello world')\n```"
+        )
+        mod = _import_script("create_doc")
+        out = _run(
+            mod,
+            ["--title", f"MD内容测试_{_ts()}", "--content", md],
+            auth_mod, feishu_token, capsys,
+        )
+
+        assert out["errcode"] == 0, f"创建文档失败：{out['errmsg']}"
+        assert out["data"]["document_id"], "document_id 不能为空"
+        assert out["data"]["blocks_written"] > 0, "应写入至少一个 block"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -416,3 +440,53 @@ class TestBitablePipelineLive:
 
         assert records_out["errcode"] == 0, f"批量写入失败：{records_out['errmsg']}"
         assert records_out["data"]["record_count"] == 50
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# upload_sheet.py 实况测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.feishu
+@pytest.mark.integration
+class TestUploadSheetLive:
+    """验证 upload_sheet.py 能将本地 xlsx 文件导入为飞书电子表格。"""
+
+    def test_uploads_xlsx_returns_spreadsheet_token(
+        self, feishu_token, auth_mod, capsys, tmp_path
+    ):
+        """
+        全链路：
+          1. 创建最小 xlsx 文件（openpyxl）
+          2. upload_sheet 上传并导入
+          3. 验证返回 spreadsheet_token 和 url
+        """
+        try:
+            import openpyxl  # noqa: PLC0415
+        except ImportError:
+            pytest.skip("openpyxl 未安装，跳过 upload_sheet 实况测试")
+
+        # 生成真实 xlsx 文件
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "测试数据"
+        ws.append(["姓名", "部门", "入职年份"])
+        ws.append(["张三", "工程部", 2021])
+        ws.append(["李四", "产品部", 2022])
+        xlsx_path = tmp_path / f"测试数据_{_ts()}.xlsx"
+        wb.save(str(xlsx_path))
+
+        mod = _import_script("upload_sheet")
+        out = _run(
+            mod,
+            [
+                "--file_path", str(xlsx_path),
+                "--title", f"集成测试导入_{_ts()}",
+            ],
+            auth_mod, feishu_token, capsys,
+        )
+
+        assert out["errcode"] == 0, f"导入失败：{out['errmsg']}"
+        assert out["data"]["spreadsheet_token"], "spreadsheet_token 不能为空"
+        assert out["data"]["url"], "url 不能为空"
+        assert out["data"]["file_size"] > 0

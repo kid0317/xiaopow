@@ -170,20 +170,26 @@ python {_skill_base}/scripts/create_event.py \
 
 ## 五、创建飞书文档 / 电子表格
 
-### create_doc.py — 创建飞书文档（Docx）
+### create_doc.py — 创建飞书文档（Docx），可写入 Markdown 内容
 
 ```
 python {_skill_base}/scripts/create_doc.py \
     --title "季度报告" \
-    [--folder_token <token>]
+    [--folder_token <token>] \
+    [--content "# 一季度\n\n正文内容..."] \
+    [--content_file /workspace/report.md]
 ```
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `--title` | ✅ | 文档标题 |
 | `--folder_token` | 否 | 目标文件夹 token；留空则放在应用云空间根目录 |
+| `--content` | 否 | Markdown 字符串，直接写入文档正文 |
+| `--content_file` | 否 | Markdown 文件路径（与 `--content` 二选一，文件优先） |
 
-返回 `data.document_id`（文档 ID）和 `data.url`。
+**支持的 Markdown 语法**：`# 标题1`～`###### 标题6`、`- 无序列表`、`1. 有序列表`、` ``` 代码块 ``` `、普通段落。
+
+返回 `data.document_id`、`data.url`、`data.blocks_written`（写入块数）。
 
 ---
 
@@ -201,6 +207,27 @@ python {_skill_base}/scripts/create_sheet.py \
 | `--folder_token` | 否 | 目标文件夹 token；留空则放在应用云空间根目录 |
 
 返回 `data.spreadsheet_token` 和 `data.url`。
+
+---
+
+### upload_sheet.py — 将本地 Excel 文件导入为飞书电子表格
+
+```
+python {_skill_base}/scripts/upload_sheet.py \
+    --file_path /workspace/sessions/{session_id}/outputs/report.xlsx \
+    [--title "销售报告"] \
+    [--folder_token <token>]
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--file_path` | ✅ | 本地 `.xlsx` / `.xls` 文件绝对路径（≤20MB） |
+| `--title` | 否 | 导入后的表格名称；留空则使用文件名 |
+| `--folder_token` | 否 | 目标文件夹 token；留空则放在应用云空间根目录 |
+
+三步导入流程：上传文件 → 创建导入任务 → 轮询等待完成（最长 60s）。
+
+返回 `data.spreadsheet_token`、`data.url`、`data.title`、`data.file_size`。
 
 ---
 
