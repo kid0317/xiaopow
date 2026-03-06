@@ -1,5 +1,13 @@
 """BaiduSearchTool — 百度千帆搜索 API 的 CrewAI 工具封装（按 XiaoPaw 标准整理）。
 
+💡【第12课·工具设计哲学】本工具体现了课程中的三个核心原则：
+   1. 语义完整性：工具聚合了百度千帆的搜索能力，Agent 调用一次即得结构化结果，
+      而非先调"发请求"工具再调"解析响应"工具（原子 API 的聚合）
+   2. 建设性报错：所有错误返回"错误→原因→解决提示"三段式自然语言，
+      让 Agent 能理解错误并自主决定下一步（而非收到 HTTP 500 一头雾水）
+   3. I/O 瘦身：输入只有 4 个语义清晰的参数，输出直接返回格式化文本，
+      避免将 API 原始响应的所有嵌套字段暴露给 Agent
+
 用于在 Skill 或 Agent 中进行网页搜索，适合作为 baidu_search Skill 的底层实现参考。
 """
 
@@ -19,7 +27,12 @@ logger = logging.getLogger(__name__)
 
 
 class BaiduSearchInput(BaseModel):
-    """百度搜索工具的输入参数模式。"""
+    """百度搜索工具的输入参数模式。
+
+    💡【第13课·参数描述工程】每个 Field 的 description 都精确描述了：
+       取值范围、默认值、典型使用场景——LLM 生成工具调用时直接参考这些描述，
+       Field description 越精准，LLM 传参越准确
+    """
 
     query: str = Field(
         ...,
@@ -49,6 +62,8 @@ class BaiduSearchInput(BaseModel):
     @field_validator("query")
     @classmethod
     def validate_query(cls, v: str) -> str:
+        # 💡【第13课·建设性报错】错误消息三段式结构：错误现象→原因→解决建议
+        # Agent 收到此错误后能理解"为什么"并知道"怎么修"，而非收到 ValueError("empty string")
         if not v or not v.strip():
             raise ValueError(
                 "错误：查询内容不能为空。"

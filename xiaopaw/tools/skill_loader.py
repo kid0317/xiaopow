@@ -1,23 +1,30 @@
 """SkillLoaderTool — XiaoPaw 核心工具
 
+💡【第16课·Skills 生态入口】SkillLoaderTool 是主 Agent 的唯一能力扩展入口，
+   所有领域能力都通过 Skill 生态接入，体现"极简主 Agent + 丰富 Skill 生态"的设计哲学
+
 设计要点：
   1. 渐进式披露（Progressive Disclosure）
-     - __init__ 只解析 SKILL.md 的 YAML frontmatter，构建轻量 XML 注入工具 description
-     - 主 Agent 通过 description 感知"有哪些 Skill、各自用途"
-     - 真正调用时才读取完整 SKILL.md 正文（按需加载）
+     💡【第16课·渐进式披露】分两阶段加载，控制主 Agent 的上下文开销：
+     - 阶段一（__init__）：只解析 SKILL.md 的 YAML frontmatter，构建轻量 XML 注入工具 description
+       主 Agent 通过 description 感知"有哪些 Skill、各自用途"，上下文消耗极小
+     - 阶段二（调用时）：读取完整 SKILL.md 正文（按需加载），拼接沙盒路径指令注入 Sub-Crew
+       结果写入缓存，同一 Skill 只读一次文件
 
   2. 参考型 vs 任务型
-     - reference：返回指令文本，主 Agent 自行消化，不启动 Sub-Crew
-     - task：触发独立 Sub-Crew + AIO-Sandbox 执行，上下文完全隔离
+     💡【第16课·两种 Skill 类型】：
+     - reference：返回指令文本，主 Agent 自行消化推理，不启动 Sub-Crew（轻量）
+     - task：触发独立 Sub-Crew + AIO-Sandbox 执行，上下文完全隔离（重量）
 
   3. 异步双通道
+     💡【工程实践】规避 CrewAI 同步/异步混用问题：
      - _arun()：FastAPI akickoff() 调用链的主路径，原生 await
      - _run()：同步 fallback，ThreadPoolExecutor 提供独立 event loop，
                规避 "cannot run nested event loop" 错误
 
   4. 会话隔离
-     - 每个 SkillLoaderTool 实例绑定 session_id
-     - Sub-Crew 的工作目录限定在 /workspace/sessions/{session_id}/
+     💡【第03课·上下文隔离】每个 SkillLoaderTool 实例绑定 session_id，
+     Sub-Crew 的工作目录限定在 /workspace/sessions/{session_id}/，不同会话互不干扰
 """
 
 from __future__ import annotations
@@ -56,6 +63,11 @@ class SkillLoaderInput(BaseModel):
     )
     task_context: str = Field(
         default="",
+        # 💡【第13课·参数描述工程】Field description 是约束 LLM 调用行为的最精准位置：
+        # 它直接被序列化进工具的 JSON Schema，LLM 生成 function call 时立即看到，
+        # 比 Agent backstory 更精准、不会被上下文稀释——这是第13课"参数描述工程"的核心
+        # 💡【第16课·约束放 Field description】课程强调：工具约束写在 Field description，
+        # 不要写在 Agent backstory（backstory 控制行为倾向，description 控制格式约束）
         description=(
             "如果是参考型skill，此项为空。\n"
             "如果是任务型skill，此项为调用此 Skill 要完成的子任务的完整描述（必须是字符串）。"

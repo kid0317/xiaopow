@@ -1,11 +1,20 @@
 """Sub-Crew 工厂 — XiaoPaw 任务型 Skill 执行层
 
+💡【第03课·上下文隔离】Sub-Crew 是 XiaoPaw 实现 Multi-Agent 上下文隔离的核心机制：
+   - 主 Crew 的历史对话不传入 Sub-Crew（Sub-Crew 只看到当前任务指令）
+   - Sub-Crew 的执行过程不污染主 Crew（主 Crew 只看到 Sub-Crew 的摘要输出）
+   - 这就是课程中"Agent 的数字化职能部门"理念的工程实现：
+     主 Agent = PMO（项目管理），Sub-Agent = 各职能部门执行具体工作
+
+💡【第14课·MCP 协议】Sub-Crew 通过 MCPServerHTTP 接入 AIO-Sandbox，
+   采用 create_static_tool_filter 白名单过滤，只开放 4 个安全工具
+
 每次 SkillLoaderTool 触发任务型 Skill 时，调用 build_skill_crew() 构建
 一个全新的 Sub-Crew 实例，在 AIO-Sandbox 中执行 Skill 逻辑。
 
 设计要点：
 - 每次调用返回新实例，防止 CrewAI 内部状态污染
-- Sub-Crew 不注入 step_callback（verbose 只推主 Agent 的推理）
+- Sub-Crew 不注入 step_callback（verbose 只推主 Agent 的推理，避免话题噪音）
 - session_id 通过 task.description 注入，Agent 知道自己的沙盒工作目录
 - 工具白名单：只开放 4 个沙盒工具，防止越权
 """
@@ -27,13 +36,16 @@ logger = logging.getLogger(__name__)
 # 默认端口：sandbox-docker-compose.yaml 映射 8022:8080
 _DEFAULT_SANDBOX_MCP_URL = "http://localhost:8022/mcp"
 
-# 白名单过滤：只开放 4 个沙盒工具，排除 browser_* 系列
+# 💡【第14课·工具白名单】create_static_tool_filter 是 MCP 安全设计的关键：
+# AIO-Sandbox 暴露了 30+ 个工具（含 browser_* 等高危工具），
+# 通过白名单只开放 4 个沙盒安全工具，防止 Agent 越权（如访问外部网络）
+# 这对应课程"避免巨型 MCP，防止工具越权"的最佳实践
 _SANDBOX_TOOL_FILTER = create_static_tool_filter(
     allowed_tool_names=[
-        "sandbox_execute_bash",
-        "sandbox_execute_code",
-        "sandbox_file_operations",
-        "sandbox_str_replace_editor",
+        "sandbox_execute_bash",       # Shell 命令执行（运行 Skill 脚本）
+        "sandbox_execute_code",       # Python/JS 代码执行（数据处理）
+        "sandbox_file_operations",    # 文件读写列举查找（I/O 操作）
+        "sandbox_str_replace_editor", # 文件内容编辑（与 Anthropic str_replace 兼容）
     ]
 )
 
@@ -60,7 +72,9 @@ def build_skill_crew(
     Returns:
         已配置好的 Crew 实例，可直接调用 kickoff() / akickoff()
     """
-    # 💡 核心点：每次构建新实例，MCP 连接独立，防止状态污染
+    # 💡【第14课·MCP 接入】MCPServerHTTP + tool_filter 是 CrewAI 原生 MCP 接入方式
+    # framework 自动将 MCP 工具转换为 Agent 可用工具，无需手动封装
+    # 💡【第03课·工厂模式】每次构建新实例 → 新的 MCP 连接 → 状态完全隔离
     sandbox_mcp = MCPServerHTTP(
         url=sandbox_mcp_url,
         tool_filter=_SANDBOX_TOOL_FILTER,
@@ -72,6 +86,11 @@ def build_skill_crew(
         f"/workspace/sessions/{session_id}" if session_id else "/workspace/sessions/<session_id>"
     )
 
+    # 💡【第07课·Agent 三要素动态构建】Sub-Crew 的 role/goal/backstory 不来自 YAML，
+    # 而是根据 skill_name 和 session 工作目录动态生成——这是 Sub-Crew 与主 Crew 的关键区别：
+    # 主 Crew 人设固定（YAML），Sub-Crew 人设按任务动态定制
+    # 💡【第07课·max_iter】Sub-Agent 迭代上限设为 20（默认），比主 Agent（50）更保守，
+    # 因为 Sub-Task 范围明确，迭代超限通常意味着 Skill 指令有问题
     skill_agent = Agent(
         role=f"{skill_name.upper()} Skill 执行专家",
         goal=f"严格按照 {skill_name} Skill 的操作规范，在 AIO-Sandbox 中完成任务",
@@ -85,11 +104,14 @@ def build_skill_crew(
             f"{skill_instructions}"
         ),
         llm=skill_llm,
+        # 💡【第14课·MCP 接入】mcps 参数接收 MCPServerHTTP 列表，框架自动管理连接
         mcps=[sandbox_mcp],
         verbose=True,
         max_iter=max_iter,
     )
 
+    # 💡【第08课·Task 契约】description 明确执行环境约束，expected_output 定义 JSON 格式
+    # 注意：{task_context} 由 akickoff(inputs=...) 显式注入（第09课·显式上下文传递）
     skill_task = Task(
         description=(
             "根据以下任务要求，使用你掌握的 Skill 操作规范完成任务。\n\n"
@@ -109,6 +131,10 @@ def build_skill_crew(
         agent=skill_agent,
     )
 
+    # 💡【第09课·Sequential Process】Sub-Crew 同样使用顺序执行
+    # 单 Agent 单 Task 天然顺序，此处显式声明让代码意图清晰
+    # 注意：Sub-Crew 不传入 step_callback——Sub-Crew 的推理过程不推送到飞书，
+    # 避免在 verbose 模式下产生对用户来说难以理解的底层执行噪音
     return Crew(
         agents=[skill_agent],
         tasks=[skill_task],

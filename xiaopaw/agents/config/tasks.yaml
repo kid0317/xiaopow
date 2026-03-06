@@ -1,6 +1,16 @@
 # XiaoPaw 主任务配置
 # description 中的 {history}, {user_message} 由 crew.akickoff(inputs=...) 注入
 # 注意：session_id 不通过模板注入，由系统内部管理（安全隔离）
+#
+# 💡【第08课·Task 定义】description + expected_output 是 Task 的"契约"两要素：
+#   - description：清楚描述任务背景、输入数据和要求（这里通过模板注入历史和用户消息）
+#   - expected_output：明确定义输出格式——这直接影响 LLM 的结构化输出质量
+#
+# 💡【第09课·显式 Context 传递】{history} 和 {user_message} 通过 akickoff(inputs={...})
+# 显式注入，而非依赖 CrewAI 的隐式上下文传递——显式优于隐式，可追踪、可测试
+#
+# 💡【第08课·output_pydantic】在 main_crew.py 中通过 output_pydantic=MainTaskOutput
+# 强制结构化输出 JSON，对应 Task 定义中 expected_output 的格式约定
 
 main_task:
   description: |
@@ -21,3 +31,4 @@ main_task:
       "used_skills": ["本次调用的 Skill 名称列表，无则为空数组"]
     }
     reply 字段内容应适合通过飞书消息直接发送，语气自然友好。
+

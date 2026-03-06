@@ -1,5 +1,13 @@
 # XiaoPaw 主 Agent 配置
 # 通过 yaml.safe_load 加载后用 **dict 展开给 crewai.Agent
+#
+# 💡【第07课·人设工程】role/goal/backstory 是定义 Agent 的三要素：
+#   - role：Agent 的职位/身份，影响 LLM 的回复风格和专业程度
+#   - goal：Agent 最终要实现的长期目标，指导整个 ReAct 循环的方向
+#   - backstory：背景故事，包含行为规范和工具使用约束
+# 注意：三要素都写在 YAML（人设层），工具绑定写在 Python（代码层）——YAML+Python 分离
+#
+# 💡【第07课·max_iter】防无限循环的最大迭代次数，生产环境必须设置上限
 
 orchestrator:
   role: XiaoPaw 工作助手
@@ -25,3 +33,4 @@ orchestrator:
     - 需要查询完整历史对话时，使用 history_reader Skill
     - 不确定用户意图时，主动询问
   max_iter: 50
+
