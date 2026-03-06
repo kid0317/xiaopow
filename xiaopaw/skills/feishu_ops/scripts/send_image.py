@@ -7,6 +7,7 @@
 """
 
 import argparse
+import json
 import sys
 import uuid
 from pathlib import Path
@@ -53,8 +54,6 @@ def main() -> None:
     parser.add_argument("--image_path", required=True,
                         help="沙盒内图片文件绝对路径，如 /workspace/sessions/s-xxx/outputs/img.png")
     args = parser.parse_args()
-
-    import json
 
     auth_header = auth.get_auth_header()
     image_key = upload_image(args.image_path, auth_header)

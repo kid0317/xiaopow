@@ -139,15 +139,46 @@ def _md_to_blocks(md: str) -> list[dict]:
 
 
 def _write_blocks(document_id: str, blocks: list[dict]) -> None:
-    """将 blocks 追加到文档末尾（写入 page block 的 children）。"""
+    """将 blocks 分批追加到文档末尾（每批≤50，绕过 API 单次限制）。"""
+    batch_size = 50
+    for i in range(0, len(blocks), batch_size):
+        batch = blocks[i:i + batch_size]
+        resp = requests.post(
+            f"{_BASE}/docx/v1/documents/{document_id}/blocks/{document_id}/children",
+            headers=get_headers(),
+            json={"children": batch, "index": i},
+            timeout=30,
+        )
+        data = resp.json()
+        check_feishu_resp(data, "写入文档内容失败，请确认 document_id 正确且应用有编辑权限")
+
+
+def _get_real_url(document_id: str) -> str:
+    """通过 drive meta 接口获取文档的真实用户端 URL（含租户域名）。"""
     resp = requests.post(
-        f"{_BASE}/docx/v1/documents/{document_id}/blocks/{document_id}/children",
+        f"{_BASE}/drive/v1/metas/batch_query",
         headers=get_headers(),
-        json={"children": blocks, "index": 0},
-        timeout=30,
+        json={"request_docs": [{"doc_token": document_id, "doc_type": "docx"}], "with_url": True},
+        timeout=10,
     )
-    data = resp.json()
-    check_feishu_resp(data, "写入文档内容失败，请确认 document_id 正确且应用有编辑权限")
+    try:
+        url = resp.json()["data"]["metas"][0]["url"]
+        if url:
+            return url
+    except (KeyError, IndexError):
+        pass
+    return f"https://open.feishu.cn/docx/{document_id}"  # fallback
+
+
+def _set_tenant_readable(document_id: str) -> None:
+    """设置文档为组织内成员持链接可阅读（drive/v2 接口）。"""
+    requests.patch(
+        f"{_BASE}/drive/v2/permissions/{document_id}/public",
+        params={"type": "docx"},
+        headers=get_headers(),
+        json={"link_share_entity": "tenant_readable"},
+        timeout=10,
+    )  # 权限设置失败不阻断主流程，静默忽略
 
 
 def main() -> None:
@@ -196,9 +227,14 @@ def main() -> None:
 
     doc = data["data"]["document"]
     document_id = doc.get("document_id", "")
-    url = f"https://open.feishu.cn/docx/{document_id}"
 
-    # 2. 写入内容（可选）
+    # 2. 设置组织内持链接可阅读
+    _set_tenant_readable(document_id)
+
+    # 3. 获取真实用户端 URL（含租户域名）
+    url = _get_real_url(document_id)
+
+    # 4. 写入内容（可选）
     blocks_written = 0
     if md_content.strip():
         blocks = _md_to_blocks(md_content)

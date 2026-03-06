@@ -56,7 +56,8 @@ def main() -> None:
         body["attendees"] = [{"type": "user", "user_id": oid} for oid in attendee_ids]
 
     resp = requests.post(
-        f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{args.calendar_id}/events",
+        f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{args.calendar_id}/events"
+        "?user_id_type=open_id",
         headers=headers,
         json=body,
         timeout=15,
@@ -86,6 +87,7 @@ def _to_unix_ts(rfc3339: str) -> str:
         dt = datetime.fromisoformat(s)
     except ValueError:
         auth.output_error(f"时间格式错误：{rfc3339}，请使用 RFC3339 格式，如 2026-03-09T10:00:00+08:00")
+        return ""  # output_error calls sys.exit; this line is a safety guard
     dt_utc = dt.astimezone(timezone.utc)
     return str(int(dt_utc.timestamp()))
 

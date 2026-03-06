@@ -15,6 +15,34 @@ from _feishu_auth import check_feishu_resp, get_headers, output_ok  # noqa: E402
 _BASE = "https://open.feishu.cn/open-apis"
 
 
+def _set_tenant_readable(token: str) -> None:
+    """设置表格为组织内成员持链接可阅读。"""
+    requests.patch(
+        f"{_BASE}/drive/v2/permissions/{token}/public",
+        params={"type": "sheet"},
+        headers=get_headers(),
+        json={"link_share_entity": "tenant_readable"},
+        timeout=10,
+    )
+
+
+def _get_real_url(token: str) -> str:
+    """通过 drive meta 接口获取表格的真实用户端 URL（含租户域名）。"""
+    resp = requests.post(
+        f"{_BASE}/drive/v1/metas/batch_query",
+        headers=get_headers(),
+        json={"request_docs": [{"doc_token": token, "doc_type": "sheet"}], "with_url": True},
+        timeout=10,
+    )
+    try:
+        url = resp.json()["data"]["metas"][0]["url"]
+        if url:
+            return url
+    except (KeyError, IndexError):
+        pass
+    return f"https://open.feishu.cn/sheets/{token}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--title", required=True, help="电子表格标题")
@@ -40,7 +68,9 @@ def main() -> None:
 
     sheet_info = data["data"]["spreadsheet"]
     token = sheet_info.get("spreadsheet_token", "")
-    url = sheet_info.get("url", f"https://open.feishu.cn/sheets/{token}")
+
+    _set_tenant_readable(token)
+    url = _get_real_url(token)
 
     output_ok({"spreadsheet_token": token, "url": url, "title": args.title})
 

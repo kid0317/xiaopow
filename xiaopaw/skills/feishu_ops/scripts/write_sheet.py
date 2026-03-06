@@ -111,26 +111,36 @@ def main() -> None:
     start = args.start_cell.upper()
     rows = len(values)
     cols = max(len(row) for row in values) if values else 1
-    end = _end_cell(start, rows, cols)
-    cell_range = f"{sheet_id}!{start}:{end}"
 
-    resp = requests.put(
-        f"{_BASE}/sheets/v2/spreadsheets/{token}/values",
-        headers=get_headers(),
-        json={"valueRange": {"range": cell_range, "values": values}},
-        timeout=30,
-    )
-    data = resp.json()
-    check_feishu_resp(
-        data,
-        "请确认 spreadsheet_token 和 sheet_id 正确，且应用已有表格编辑权限",
-    )
+    # 飞书 sheets/v2 values 接口每次最多写入 5000 行
+    _BATCH_ROWS = 5000
+    start_col, start_row = _parse_cell(start)
+    rows_written = 0
+    for i in range(0, rows, _BATCH_ROWS):
+        batch = values[i:i + _BATCH_ROWS]
+        batch_start_row = start_row + i
+        batch_start = f"{start_col}{batch_start_row}"
+        end = _end_cell(batch_start, len(batch), cols)
+        cell_range = f"{sheet_id}!{batch_start}:{end}"
+
+        resp = requests.put(
+            f"{_BASE}/sheets/v2/spreadsheets/{token}/values",
+            headers=get_headers(),
+            json={"valueRange": {"range": cell_range, "values": batch}},
+            timeout=30,
+        )
+        data = resp.json()
+        check_feishu_resp(
+            data,
+            "请确认 spreadsheet_token 和 sheet_id 正确，且应用已有表格编辑权限",
+        )
+        rows_written += len(batch)
 
     output_ok({
         "spreadsheet_token": token,
         "sheet_id": sheet_id,
-        "range": cell_range,
-        "rows_written": rows,
+        "range": f"{sheet_id}!{start}:{_end_cell(start, rows, cols)}",
+        "rows_written": rows_written,
         "cols_written": cols,
     })
 

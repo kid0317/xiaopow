@@ -492,9 +492,13 @@ class TestCreateDoc:
         argv = ["--title", "季度报告"]
         with patch("sys.argv", ["create_doc.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), api_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
+                ]):
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 0
         assert out["data"]["document_id"] == "doc_test_001"
@@ -507,9 +511,13 @@ class TestCreateDoc:
         argv = ["--title", "项目文档", "--folder_token", "fldcnXXXXXX"]
         with patch("sys.argv", ["create_doc.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]) as mock_post:
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), api_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
+                ]) as mock_post:
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         # 确认 folder_token 包含在创建请求体中
         create_call = mock_post.call_args_list[1]
         assert create_call.kwargs["json"]["folder_token"] == "fldcnXXXXXX"
@@ -537,13 +545,15 @@ class TestCreateDoc:
         argv = ["--title", "MD文档", "--content", md]
         with patch("sys.argv", ["create_doc.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                # POST 顺序：token(create) + create_doc + token(write) + write_blocks
+                # POST 顺序：token(create) + create_doc + token(perm) + token(url) + meta + token(write) + write_blocks
                 with patch("requests.post", side_effect=[
                     _make_token_resp(), create_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
                     _make_token_resp(), blocks_resp,
                 ]):
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 0
         assert out["data"]["document_id"] == "doc_md_001"
@@ -591,10 +601,12 @@ class TestCreateDoc:
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
                 with patch("requests.post", side_effect=[
                     _make_token_resp(), create_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
                     _make_token_resp(), blocks_resp,
                 ]):
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 0
         assert out["data"]["blocks_written"] > 0
@@ -632,9 +644,13 @@ class TestCreateSheet:
         argv = ["--title", "销售数据"]
         with patch("sys.argv", ["create_sheet.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), api_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
+                ]):
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 0
         assert out["data"]["spreadsheet_token"] == "sht_test_001"
@@ -648,9 +664,13 @@ class TestCreateSheet:
         argv = ["--title", "周报", "--folder_token", "fldcnYYYYYY"]
         with patch("sys.argv", ["create_sheet.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]) as mock_post:
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), api_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
+                ]) as mock_post:
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         create_call = mock_post.call_args_list[1]
         assert create_call.kwargs["json"]["folder_token"] == "fldcnYYYYYY"
         out = json.loads(capsys.readouterr().out)
@@ -756,9 +776,13 @@ class TestCreateBitable:
         argv = ["--name", "项目管理"]
         with patch("sys.argv", ["create_bitable.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), api_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
+                ]):
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 0
         assert out["data"]["app_token"] == "bitable_001"
@@ -772,9 +796,13 @@ class TestCreateBitable:
         argv = ["--name", "销售数据", "--folder_token", "fldcnZZZZZZ"]
         with patch("sys.argv", ["create_bitable.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]) as mock_post:
-                    with pytest.raises(SystemExit):
-                        self.mod.main()
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), api_resp,
+                    _make_token_resp(), _make_token_resp(), _make_api_resp(),
+                ]) as mock_post:
+                    with patch("requests.patch"):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
         create_call = mock_post.call_args_list[1]
         assert create_call.kwargs["json"]["folder_token"] == "fldcnZZZZZZ"
         out = json.loads(capsys.readouterr().out)
@@ -1004,17 +1032,22 @@ class TestUploadSheet:
         argv = ["--file_path", str(xlsx)]
         with patch("sys.argv", ["upload_sheet.py"] + argv):
             with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
-                # POST 顺序：token(upload) + upload_all + token(import_task) + import_task + token(poll)
+                # POST 顺序：token(upload) + upload_all + token(import_task) + import_task
+                #           + token(poll) + token(set_perm) + token(get_url) + meta_batch_query
                 with patch("requests.post", side_effect=[
                     _make_token_resp(),           # upload_all: get_auth_header → token
                     self._make_upload_resp(),      # upload_all: actual response
                     _make_token_resp(),            # import_tasks: get_headers → token
                     self._make_import_task_resp(), # import_tasks: actual response
                     _make_token_resp(),            # poll: get_headers → token
+                    _make_token_resp(),            # _set_tenant_readable: token
+                    _make_token_resp(),            # _get_real_url: token
+                    _make_api_resp(),              # _get_real_url: meta batch_query response
                 ]):
                     with patch("requests.get", return_value=self._make_poll_resp()):
-                        with pytest.raises(SystemExit):
-                            self.mod.main()
+                        with patch("requests.patch"):
+                            with pytest.raises(SystemExit):
+                                self.mod.main()
         out = json.loads(capsys.readouterr().out)
         assert out["errcode"] == 0
         assert out["data"]["spreadsheet_token"] == "sht_imported_001"
@@ -1032,11 +1065,15 @@ class TestUploadSheet:
                 with patch("requests.post", side_effect=[
                     _make_token_resp(), self._make_upload_resp(),
                     _make_token_resp(), self._make_import_task_resp(),
-                    _make_token_resp(),  # poll token
+                    _make_token_resp(),            # poll token
+                    _make_token_resp(),            # _set_tenant_readable: token
+                    _make_token_resp(),            # _get_real_url: token
+                    _make_api_resp(),              # _get_real_url: meta batch_query response
                 ]) as mock_post:
                     with patch("requests.get", return_value=self._make_poll_resp()):
-                        with pytest.raises(SystemExit):
-                            self.mod.main()
+                        with patch("requests.patch"):
+                            with pytest.raises(SystemExit):
+                                self.mod.main()
         # import_tasks 请求（第4次 POST）的 json 应含正确 file_name
         import_call = mock_post.call_args_list[3]
         assert import_call.kwargs["json"]["file_name"] == "销售报告.xlsx"
