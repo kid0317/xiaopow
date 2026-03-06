@@ -2,8 +2,8 @@
 
 > **项目**：XiaoPaw（小爪子）——飞书本地工作助手
 > **课程**：第17课 项目实战2（工具篇）
-> **版本**：v0.1 草稿
-> **最后更新**：2026-03-05
+> **版本**：v1.0
+> **最后更新**：2026-03-06
 
 ---
 
@@ -49,17 +49,19 @@
 
 | Skill | 类型 | 核心能力 |
 |-------|------|---------|
-| `file_processor` | 任务型 | PDF/DOCX 解析与格式转换 |
+| `pdf` | 任务型 | PDF 解析、文本提取、格式转换 |
+| `docx` | 任务型 | Word 文档读取与处理 |
+| `pptx` | 任务型 | PPT 文档读取与处理 |
+| `xlsx` | 任务型 | Excel 表格读取与处理 |
 | `feishu_ops` | 任务型 | 读云文档、向指定群/用户发消息 |
-| `baidu_search` | 任务型 | 百度搜索并摘要 |
 | `scheduler_mgr` | 任务型 | 创建/查看/删除定时任务 |
+| `history_reader` | 参考型 | 分页读取历史对话记录 |
 
-### 1.4 当前实现进度（2026-03-05）
+### 1.4 实现状态
 
-- **已在主链路跑通**：飞书 WebSocket → FeishuListener → Runner（含 per-routing_key 队列与 Slash 命令占位）→ FeishuSender，默认固定回复“收到，session={id}”。
-- **基础设施已完成并有测试**：Session 模型与 SessionManager、Cron 数据模型与 CronService、本地测试用 TestAPI、AliyunLLM 适配层、Metrics 与 /metrics 服务器、Feishu 附件下载器等（详见 `CLAUDE.md` 的 Development Progress）。
-- **已实现但尚未接入主链路**：CrewAI 主 Agent `MainCrew` 及其 YAML 配置、`history_reader` Skill 等，目前只在测试与设计层面使用。
-- **尚未实现**：`agents/skill_crew.py`、`tools/skill_loader.py`、`cleanup/service.py` 等仍处于设计阶段，本设计文档按目标架构描述这些模块的预期行为。
+全部功能模块已实现并通过测试（309 单元测试，83% 覆盖率；50 集成测试）。
+
+消息处理主链路已全面打通：飞书 WebSocket → FeishuListener → Runner → Main Agent（SkillLoaderTool）→ Sub-Crew（AIO-Sandbox）→ FeishuSender。所有 Skills 已实现。CleanupService、CronService、TestAPI、metrics 均已在 main.py 接入。
 
 ---
 
@@ -209,10 +211,10 @@ xiaopaw/
 ├── api/test_server.py           # 测试 API（仅 debug 模式）
 ├── runner.py                    # 执行引擎（session/slash/Agent/存储/发送）
 ├── agents/
-│   ├── main_crew.py             # 主 Crew（build_main_crew，已实现，待接入主链路）
-│   └── skill_crew.py            # Sub-Crew 工厂（build_skill_crew，TODO）
+│   ├── main_crew.py             # 主 Crew（build_agent_fn 工厂）
+│   └── skill_crew.py            # Sub-Crew 工厂（build_skill_crew）
 ├── tools/
-│   ├── skill_loader.py          # SkillLoaderTool（渐进式披露，TODO）
+│   ├── skill_loader.py          # SkillLoaderTool（渐进式披露 + Sub-Crew 触发）
 │   ├── add_image_tool_local.py  # 本地图片 → Base64 Data URL
 │   ├── baidu_search_tool.py     # 百度千帆 web_search 封装
 │   └── intermediate_tool.py     # 中间产物保存
@@ -222,8 +224,8 @@ xiaopaw/
 │   └── metrics_server.py        # /metrics HTTP 服务
 ├── session/manager.py + models.py
 ├── cron/service.py + models.py
-├── cleanup/service.py           # CleanupService 实现（TODO）
-├── skills/                      # file_processor/ feishu_ops/ baidu_search/ scheduler_mgr/ history_reader/
+├── cleanup/service.py           # CleanupService（sweep + workspace 初始化 + credentials 写入）
+├── skills/                      # pdf/ docx/ pptx/ xlsx/ feishu_ops/ scheduler_mgr/ history_reader/
 └── data/                        # 运行时数据（.gitignore）
     ├── sessions/index.json + {sid}.jsonl
     ├── traces/{sid}/{ts}_{msg_id}/  # meta.json + main.jsonl + skills/
@@ -289,32 +291,23 @@ xiaopaw/
 
 ## 7. MVP Skills 设计
 
-### file_processor
+### pdf / docx / pptx / xlsx（文件处理）
 
 | 项目 | 内容 |
 |------|------|
 | 类型 | 任务型（task） |
-| 核心能力 | PDF 解析、PDF→DOCX/Markdown、DOCX 读取 |
-| 沙盒依赖 | `pypdf`, `python-docx`, `markitdown` |
-| 典型调用 | "帮我把这个 PDF 转成 Word" |
+| 核心能力 | PDF 解析与文本提取、Word/PPT/Excel 读取、格式转换 |
+| 沙盒依赖 | `pypdf`, `python-docx`, `python-pptx`, `pandas`, `openpyxl`, `markitdown` |
+| 典型调用 | "帮我把这个 PDF 转成 Word"、"提取这个 Excel 的数据汇总" |
 
 ### feishu_ops
 
 | 项目 | 内容 |
 |------|------|
 | 类型 | 任务型（task） |
-| 核心能力 | 读取飞书云文档、向指定群/用户发消息、查询消息历史 |
+| 核心能力 | 读取飞书云文档、向指定群/用户发消息 |
 | 沙盒依赖 | `lark-oapi`，credentials 从 `/workspace/.config/feishu.json` 读取 |
 | 典型调用 | "把这份文档的内容总结发到 HR 群" |
-
-### baidu_search
-
-| 项目 | 内容 |
-|------|------|
-| 类型 | 任务型（task） |
-| 核心能力 | 百度搜索、解析结果、摘要返回 |
-| 沙盒依赖 | `requests`, `beautifulsoup4` |
-| 典型调用 | "搜索一下最新的 Python 3.13 发布说明" |
 
 ### scheduler_mgr
 
@@ -325,6 +318,15 @@ xiaopaw/
 | 沙盒依赖 | 仅文件读写（`sandbox_file_operations`） |
 | 典型调用 | "每周一早上9点提醒我写周报" |
 | 特殊说明 | **只管配置，不管执行**；执行由框架层 CronService 负责 |
+
+### history_reader
+
+| 项目 | 内容 |
+|------|------|
+| 类型 | 参考型（reference） |
+| 核心能力 | 分页读取历史对话记录，返回操作规范给主 Agent |
+| 沙盒依赖 | 无（reference 型，不启动 Sub-Crew） |
+| 典型调用 | "我上次说要做什么来着？" |
 
 ---
 
@@ -415,11 +417,13 @@ Docker 容器
 ```yaml
 services:
   aio-sandbox:
-    image: aio-sandbox:latest
+    image: ghcr.io/agent-infra/sandbox:latest
     ports:
-      - "8080:8080"
+      - "8022:8080"    # Sandbox MCP 端点：http://localhost:8022/mcp
     volumes:
-      - ./data/workspace:/workspace
+      - ./xiaopaw/skills:/mnt/skills:ro
+      - ./data/workspace:/workspace:rw
+      - ./data/cron:/workspace/cron:rw
     restart: unless-stopped
 ```
 
@@ -442,42 +446,40 @@ services:
 
 ```mermaid
 flowchart TD
-    Startup[XiaoPaw 启动] --> Sweep1[立即执行 run_sweep\n处理异常退出遗留]
-    CronDaily["CronService\n内置 Job：每日 3:00"] --> Sweep2[定时 run_sweep]
+    Startup[XiaoPaw 启动] --> Sweep1[立即执行 CleanupService.sweep\n处理异常退出遗留]
+    CronDaily["main.py 内置\n每日 3:00 协程"] --> Sweep2[定时 CleanupService.sweep]
 
-    Sweep1 & Sweep2 --> CLS[CleanupService.run_sweep]
+    Sweep1 & Sweep2 --> CLS[CleanupService._sync_sweep]
 
     CLS --> P1["tmp/ → 1天\n（+session结束时主动清理）"]
     CLS --> P2["uploads/ → 7天"]
     CLS --> P3["outputs/ → 30天"]
     CLS --> P4["traces/ → 30天"]
     CLS --> P5["sessions/*.jsonl → 365天"]
-    CLS --> P6["空 session 目录 → 立即删除"]
 
     style P1 fill:#ffcccc
     style P2 fill:#ffe0b2
     style P3 fill:#fff9c4
     style P4 fill:#fff9c4
     style P5 fill:#c8e6c9
-    style P6 fill:#ffcccc
 ```
 
-**session.jsonl 归档 TODO**（MVP 直接删除，第22课记忆篇补充）：
+**session.jsonl 归档**（MVP 直接删除，第22课记忆篇补充）：
 - 进阶：移至 `data/sessions/archive/`，压缩为 `.jsonl.gz`
 - 长远：对话历史 embedding 进向量库后，JSONL 原文件重要性降低，清理策略可更激进
 
 ---
 
-## 12. 待确认事项
+## 12. 已确认设计决策
 
-| 编号 | 问题 | 状态 |
+| 编号 | 决策 | 结论 |
 |------|------|------|
-| T-01 | 话题群回复 API | ✅ 已确认：`ReplyMessage` API，`POST /messages/:root_id/reply`，`reply_in_thread=True` |
-| T-02 | AIO-Sandbox workspace 挂载方式 | ✅ 已确认：docker-compose 统一挂载 `./data/workspace:/workspace`，`.config/feishu.json` 直接可读 |
-| T-03 | Sub-Crew Trace 写入时机 | ✅ 已确认：Sub-Crew 任务结束后，在 `SkillLoaderTool._run()` return 前手动写入 `skills/{name}.jsonl` |
-| T-04 | CronService 依赖 | ✅ 已确认：`croniter` 加入 `requirements.txt` |
-| T-05 | 飞书 Bot 接收消息条件 | ✅ 已配置：飞书开放平台权限已申请，待上线后测试验证 |
-| T-06 | 文件下载权限 | ✅ 已配置：飞书开放平台权限已申请，待上线后测试验证 |
+| D-01 | 话题群回复 API | `ReplyMessage` API，`POST /messages/:root_id/reply`，`reply_in_thread=True` |
+| D-02 | AIO-Sandbox workspace 挂载方式 | docker-compose 挂载 `./data/workspace:/workspace`，skills 挂载为 `/mnt/skills`，`.config/feishu.json` 直接可读 |
+| D-03 | Sub-Crew Trace 写入时机 | Sub-Crew 任务结束后，在 `SkillLoaderTool._run()` return 前手动写入 `skills/{name}.jsonl` |
+| D-04 | CronService 依赖 | `croniter` 加入 `requirements.txt` |
+| D-05 | 热重载变更检测 | mtime + 文件大小双重检测，避免高频写入时 mtime 相同导致漏检 |
+| D-06 | 每日清理触发方式 | main.py 内置独立协程（`_daily_cleanup_loop`），精确 sleep 到下一个 3:00，不依赖 CronService |
 
 ---
 

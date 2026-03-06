@@ -1,160 +1,159 @@
 ## XiaoPaw（小爪子）
 
-本仓库是一个基于飞书的本地工作助手框架，通过 Skills 生态 + AIO-Sandbox（Docker）实现安全可扩展的工具调用。目前已实现：
+基于飞书的本地工作助手，通过 Skills 生态 + AIO-Sandbox（Docker）实现安全可扩展的工具调用。支持飞书 WebSocket 长连接，无需公网 IP，适合本地/内网部署。
 
-- 会话与存储层（SessionManager + JSONL 历史）
-- per-routing_key 串行队列的 `Runner`
-- Cron 调度模型与服务
-- 本地测试用 `TestAPI`（HTTP）
-- **最小可用链路**：飞书 WebSocket → XiaoPaw → 固定回复“收到”
+### 核心功能
 
-此外，已有一批核心模块**代码与测试已完成（但尚未在默认入口接线）**，进度详见 `CLAUDE.md` 中的 Development Progress：
+- **飞书全场景接入**：单聊（p2p）、群聊（group）、话题群（thread）
+- **Skills 生态**：7 个内置 Skill，覆盖文件处理、飞书操作、定时任务、历史查询
+- **AIO-Sandbox 隔离**：所有代码执行在 Docker 沙盒中运行，凭证不经过 LLM
+- **Verbose 详细模式**：实时推送 Agent 推理过程，可随时开关
+- **定时任务**：支持一次性（at）、固定间隔（every）、Cron 表达式三种模式
+- **TestAPI**：HTTP 接口本地调试，无需真实飞书环境
 
-- CrewAI 主 Agent `MainCrew` 及其 YAML 配置
-- LLM 适配层 `AliyunLLM`（通义千问 / Qwen，多模态 + Function Calling）
-- 通用工具：`AddImageToolLocal` / `BaiduSearchTool` / `IntermediateTool`
-- 可观测性组件：`metrics` / `metrics_server`
-- Feishu 附件下载器 `FeishuDownloader`
+### 内置 Skills
 
-### 目录结构（简要）
+| Skill | 类型 | 能力 |
+|-------|------|------|
+| `pdf` | 任务型 | PDF 解析、文本提取、格式转换 |
+| `docx` | 任务型 | Word 文档读取与处理 |
+| `pptx` | 任务型 | PPT 文档读取与处理 |
+| `xlsx` | 任务型 | Excel 表格读取与处理 |
+| `feishu_ops` | 任务型 | 读取飞书云文档、向指定群/用户发消息 |
+| `scheduler_mgr` | 任务型 | 创建/查看/删除定时任务 |
+| `history_reader` | 参考型 | 分页读取历史对话记录 |
 
-- `xiaopaw/`
-  - `main.py`：进程入口（当前为最小可用版本）
-  - `models.py`：`InboundMessage` / `Attachment` / `SenderProtocol`
-  - `runner.py`：执行引擎（队列、Slash 命令、Agent 调用占位）
-  - `llm/`：LLM 适配层（`AliyunLLM`，封装通义千问 / Qwen 调用，支持 Function Calling 与多模态）
-  - `session/`：Session 模型与管理（index.json + JSONL）
-  - `cron/`：Cron 数据模型与服务
-  - `feishu/`
-    - `session_key.py`：routing_key 解析
-    - `listener.py`：飞书 WebSocket 监听
-    - `sender.py`：飞书消息发送
-  - `tools/`：通用工具（如 `AddImageToolLocal`、`BaiduSearchTool`、`IntermediateTool` 等）
-  - `observability/`：可观测性模块（日志与 Prometheus Metrics）
-  - `api/`：测试用 HTTP Server（TestAPI）
-- `tests/`：单元测试与集成测试
-- `config.yaml`：运行配置（飞书凭证、数据目录等）
+### 目录结构
 
-更多设计细节见 `DESIGN.md`。
+```
+xiaopaw/
+├── main.py                  # 进程入口
+├── models.py                # InboundMessage / Attachment / SenderProtocol
+├── runner.py                # 执行引擎（per-routing_key 队列、Slash 命令、Agent 调用）
+├── llm/aliyun_llm.py        # AliyunLLM 适配器（通义千问，支持多模态+Function Calling）
+├── feishu/
+│   ├── listener.py          # WebSocket 事件 → InboundMessage
+│   ├── sender.py            # 消息发送（p2p/group/thread），含重试
+│   ├── downloader.py        # 附件下载到 session workspace
+│   └── session_key.py       # routing_key 解析
+├── agents/
+│   ├── main_crew.py         # 主 Crew（build_agent_fn 工厂）
+│   └── skill_crew.py        # Sub-Crew 工厂（build_skill_crew）
+├── tools/
+│   ├── skill_loader.py      # SkillLoaderTool（渐进式披露 + Sub-Crew 触发）
+│   ├── add_image_tool_local.py
+│   ├── baidu_search_tool.py
+│   └── intermediate_tool.py
+├── session/                 # SessionManager（index.json + JSONL）
+├── cron/                    # CronService（asyncio 精确 timer）
+├── cleanup/                 # CleanupService（按策略清理过期文件）
+├── observability/           # 日志 + Prometheus Metrics
+├── api/                     # TestAPI（aiohttp HTTP 服务）
+└── skills/                  # SKILL.md + 执行脚本，每个 Skill 独立目录
+    ├── pdf/ docx/ pptx/ xlsx/
+    ├── feishu_ops/
+    ├── scheduler_mgr/
+    └── history_reader/
+```
 
 ### 环境准备
 
-- Python 3.11+
-- 已创建的飞书自建应用，具备 IM 消息收发与 WebSocket 相关权限
-- 推荐使用虚拟环境（如 `python -m venv .venv`）
+**依赖**：Python 3.11+、Docker（运行 AIO-Sandbox）
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows 使用 .venv\Scripts\activate
-pip install -r requirements.txt  # 国内可以用阿里源：pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
-export BAIDU_API_KEY={百度搜索的apikey}
-export QWEN_API_KEY={阿里云千问的API Key}
-
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
-> 依赖列表以实际 `requirements.txt` 为准。
+**环境变量**：
+
+```bash
+export QWEN_API_KEY=<阿里云千问 API Key>
+export BAIDU_API_KEY=<百度千帆 API Key>       # 使用 BaiduSearchTool 时需要
+```
 
 ### 配置 `config.yaml`
 
-根目录已提供一份 `config.yaml`（可参考同目录下的 `config.yaml.template`），核心字段：
+复制模板并填写飞书凭证：
 
-- **飞书配置**
-  - `feishu.app_id`: 飞书开放平台应用的 App ID
-  - `feishu.app_secret`: 飞书开放平台应用的 App Secret
-  - `feishu.encrypt_key`: 可选，事件加密用
-  - `feishu.verification_token`: 可选，事件验证用
-- **数据目录**
-  - `data_dir`: 运行时数据根目录，默认 `./data`
+```bash
+cp config.yaml.template config.yaml
+```
 
-示例（脱敏）：
+核心配置项：
 
 ```yaml
 feishu:
-  app_id: "${FEISHU_APP_ID}"
-  app_secret: "${FEISHU_APP_SECRET}"
-  encrypt_key: ""
-  verification_token: ""
+  app_id: "${FEISHU_APP_ID}"       # 飞书开放平台应用 App ID
+  app_secret: "${FEISHU_APP_SECRET}" # 飞书开放平台应用 App Secret
 
-data_dir: "./data"
+sandbox:
+  url: "http://localhost:8022/mcp"  # AIO-Sandbox MCP 地址
+
+debug:
+  enable_test_api: true             # 本地调试时开启
+  test_api_port: 9090
 ```
 
-可以直接填写明文，也可以在外部通过环境变量注入。
+完整配置项见 `config.yaml.template`。
 
-### 启动最小链路（飞书 → “收到”）
-
-当前 `main.py` 已实现最小可用链路：
-
-- 监听所有 p2p / group / thread 消息
-- 使用占位 `agent_fn`，无论输入什么，统一回复 **“收到，session={session_id}”**
-
-启动命令（虚拟环境已激活的前提下）：
+### 启动 AIO-Sandbox
 
 ```bash
-python -m xiaopaw.main
+docker compose -f sandbox-docker-compose.yaml up -d
 ```
 
-成功后：
+Sandbox MCP 端点：`http://localhost:8022/mcp`
 
-- 当你的飞书应用通过 WebSocket 收到任意消息（单聊、群聊、话题），就会经过 `FeishuListener` → `Runner` → `FeishuSender`，在对应会话中回复一条「收到」。
-
-同时，会自动启动：
-
-- JSON 行格式日志：`data/logs/xiaopaw.log`
-- Prometheus 指标端点：`http://127.0.0.1:9100/metrics`
-
-> 注意：确保飞书开放平台 WebSocket 地址、权限范围等已正确配置，否则可能无法收到事件或无法发出消息。
-
-### 使用 TestAPI 本地调试
-
-在完整接入飞书前，可以通过测试 HTTP 接口快速验证核心逻辑（见 `DESIGN.md` 第 4.9 节）：
-
-- `xiaopaw/api/test_server.py` 暴露：
-  - `POST /api/test/message`：模拟用户发消息，同步返回 Bot 回复
-  - `DELETE /api/test/sessions`：清空所有会话数据
-
-示例（伪代码，实际 main wiring 待后续实现）：
+### 启动 XiaoPaw
 
 ```bash
-.venv/bin/python -m xiaopaw.api.test_server  # 或在 main 中集成
+python3 -m xiaopaw.main
 ```
 
-然后通过 HTTP 客户端（curl / HTTPie / Postman）发送：
+启动后：
+- 飞书 WebSocket 开始监听消息
+- Prometheus 指标：`http://127.0.0.1:9100/metrics`
+- JSON 行日志：`data/logs/xiaopaw.log`
+- TestAPI（如已启用）：`http://127.0.0.1:9090/api/test/message`
+
+### 本地调试（TestAPI）
+
+在 `config.yaml` 中设置 `debug.enable_test_api: true`，无需真实飞书环境：
 
 ```bash
+# 发送消息，同步获取 Bot 回复
 curl -X POST http://127.0.0.1:9090/api/test/message \
   -H "Content-Type: application/json" \
-  -d '{
-    "routing_key": "p2p:ou_test001",
-    "content": "你好"
-  }'
+  -d '{"routing_key": "p2p:ou_test001", "content": "你好"}'
+
+# 清空会话数据
+curl -X DELETE http://127.0.0.1:9090/api/test/sessions
 ```
 
-返回体会包含：
+### Slash 命令
 
-- `reply`: 当前 Runner 使用的 agent_fn 输出
-- `session_id`: 使用的对话 ID
-- `duration_ms`: 处理耗时
+| 命令 | 功能 |
+|------|------|
+| `/new` | 创建新会话，之前历史不带入 |
+| `/verbose on/off` | 开启/关闭推理过程实时推送 |
+| `/verbose` | 查询详细模式当前状态 |
+| `/status` | 查看当前会话信息 |
+| `/help` | 显示命令帮助 |
 
 ### 运行测试
 
-项目已有较完整的单元测试与集成测试，建议在修改代码后运行：
-
 ```bash
-.venv/bin/python -m pytest tests/ -v --cov=xiaopaw --cov-report=term-missing
+# 单元测试（含覆盖率）
+python3 -m pytest tests/unit/ -v --cov=xiaopaw --cov-report=term-missing
+
+# 集成测试（无 LLM，无 Sandbox）
+python3 -m pytest tests/integration/ -m "not llm and not sandbox" -v
+
+# 集成测试（含 LLM，需设置 QWEN_API_KEY）
+python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not sandbox" -v -s
+
+# 完整集成测试（需启动 Sandbox）
+python3 -m pytest tests/integration/ -v -s --timeout=180
 ```
 
-或按模块运行：
-
-```bash
-.venv/bin/python -m pytest tests/unit/test_runner.py -v
-.venv/bin/python -m pytest tests/unit/test_cron_service.py -v
-```
-
-### 后续开发路线（简要）
-
-- 将现有 CrewAI 主 Agent（`agents/main_crew.py`）接入 Runner，并实现 `SkillLoaderTool`
-- 实现 `agents/skill_crew.py`，打通任务型 Skill 与 AIO-Sandbox 的 Sub-Crew 调用
-- 实现 `cleanup/service.py` 并在 `main.py` 中接入 CronService / CleanupService / TestAPI 启动逻辑
-
-当前 README 主要面向「拉仓库 → 配配置 → 跑起来一个最小可用版本」的场景，更多设计细节与进阶用法请参考 `DESIGN.md` 和 `CLAUDE.md`。
-
+更多设计细节见 `DESIGN.md` 和 `CLAUDE.md`。

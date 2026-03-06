@@ -1,218 +1,180 @@
 ---
 name: feishu_ops
-description: "飞书操作：读取云文档内容、向指定用户或群组发送消息、获取群成员列表。适合需要与飞书平台交互的任务，如推送通知、读取共享文档、批量发送报告等。"
+description: "飞书操作：向用户/群组发送消息（文字/富文本/图片/文件）、读取云文档/表格内容、查询群成员、管理日历事件。适合推送通知、发送处理结果文件、读取共享文档、批量发送报告等场景。"
 type: task
-version: "1.0"
+version: "2.0"
 ---
 
 # feishu_ops Skill
 
-## 功能说明
+所有操作通过沙盒内的 `scripts/` 目录下的独立脚本执行。脚本自动从 `/workspace/.config/feishu.json` 读取凭证，无需手动处理鉴权。
 
-本 Skill 提供飞书（Lark）平台的核心操作能力，包括：
-1. 读取飞书云文档（Doc/Sheet）内容
-2. 向指定用户（open_id）或群组（chat_id）发送消息
-3. 查询群成员列表
-
-所有飞书 API 调用使用沙盒中的凭证文件，**不得**将 app_id / app_secret 传递给 LLM。
+**调用方式**：`python {_skill_base}/scripts/<脚本名>.py [参数]`
 
 ---
 
-## 凭证获取
+## 一、发送消息
 
-飞书应用凭证位于沙盒路径 `/workspace/.config/feishu.json`，格式：
+### send_text.py — 发送纯文字消息
+
+```
+python {_skill_base}/scripts/send_text.py \
+    --routing_key <routing_key> \
+    --text "消息内容"
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--routing_key` | ✅ | `p2p:ou_xxx`（私聊）或 `group:oc_xxx`（群组） |
+| `--text` | ✅ | 纯文本消息内容 |
+
+---
+
+### send_post.py — 发送富文本消息（带标题 + 多段落）
+
+```
+python {_skill_base}/scripts/send_post.py \
+    --routing_key <routing_key> \
+    --title "消息标题" \
+    --paragraphs '["第一段内容", "第二段，含[链接](https://example.com)"]'
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--routing_key` | ✅ | 同上 |
+| `--title` | 否 | 消息标题，可为空 |
+| `--paragraphs` | ✅ | JSON 字符串数组，每项为一段文字；支持 `[文字](URL)` 格式内嵌链接 |
+
+---
+
+### send_image.py — 发送图片
+
+```
+python {_skill_base}/scripts/send_image.py \
+    --routing_key <routing_key> \
+    --image_path /workspace/sessions/{session_id}/outputs/chart.png
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--routing_key` | ✅ | 同上 |
+| `--image_path` | ✅ | 沙盒内图片绝对路径（jpg/png/gif/webp，≤30MB） |
+
+脚本自动完成：上传图片 → 获取 image_key → 发送 image 消息。
+
+---
+
+### send_file.py — 发送文件（处理结果回传核心场景）
+
+```
+python {_skill_base}/scripts/send_file.py \
+    --routing_key <routing_key> \
+    --file_path /workspace/sessions/{session_id}/outputs/report.pdf
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--routing_key` | ✅ | 同上 |
+| `--file_path` | ✅ | 沙盒内文件绝对路径（pdf/doc/xls/ppt/mp4/opus 等，≤30MB） |
+
+脚本自动完成：上传文件 → 获取 file_key → 发送 file 消息。
+
+**典型用法**：用户上传文件 → pdf/docx/xlsx 等 Skill 处理 → 结果保存到 `outputs/` → 调用本脚本将结果文件发回给用户。
+
+---
+
+## 二、读取飞书云文档
+
+### read_doc.py — 读取飞书文档纯文本
+
+```
+python {_skill_base}/scripts/read_doc.py \
+    --doc "https://xxx.feishu.cn/docx/doccnXXXXXX"
+# 或直接传 token：
+python {_skill_base}/scripts/read_doc.py --doc doccnXXXXXX
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--doc` | ✅ | 飞书文档 URL 或 doc_token，脚本自动解析 |
+
+返回 `data.content`（纯文本字符串）。
+
+---
+
+### read_sheet.py — 读取飞书电子表格数据
+
+```
+python {_skill_base}/scripts/read_sheet.py \
+    --sheet "https://xxx.feishu.cn/sheets/shtcnXXXXXX" \
+    --sheet_id Sheet1 \
+    --range A1:D10
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--sheet` | ✅ | 电子表格 URL 或 spreadsheet_token |
+| `--sheet_id` | 否 | Sheet 的 sheetId（非 Sheet 名称），不填则读第一个 Sheet |
+| `--range` | 否 | 读取范围如 `A1:D10`，不填则读整表 |
+
+返回 `data.values`（二维数组）。
+
+---
+
+## 三、查询群成员
+
+### get_chat_members.py — 获取群组成员列表
+
+```
+python {_skill_base}/scripts/get_chat_members.py --chat_id oc_xxxxx
+```
+
+返回 `data.members`（含 open_id、name 等字段的数组）。
+
+---
+
+## 四、日历操作
+
+> 仅支持应用已订阅的共享日历，不支持用户个人 primary 日历（需 user_access_token）。
+
+### list_events.py — 查询日历事件
+
+```
+python {_skill_base}/scripts/list_events.py \
+    --calendar_id feishu_xxxxxx \
+    --start_time 2026-03-01T00:00:00+08:00 \
+    --end_time 2026-03-31T23:59:59+08:00
+```
+
+### create_event.py — 创建日历事件
+
+```
+python {_skill_base}/scripts/create_event.py \
+    --calendar_id feishu_xxxxxx \
+    --summary "周例会" \
+    --start_time 2026-03-09T10:00:00+08:00 \
+    --end_time 2026-03-09T11:00:00+08:00 \
+    --description "本周进度同步" \
+    --attendees '["ou_aaa", "ou_bbb"]'
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--calendar_id` | ✅ | 日历 ID |
+| `--summary` | ✅ | 事件标题 |
+| `--start_time` / `--end_time` | ✅ | RFC3339 格式时间 |
+| `--description` | 否 | 事件描述 |
+| `--attendees` | 否 | JSON 数组，元素为与会者 open_id |
+
+---
+
+## 输出格式
+
+所有脚本统一输出 JSON 到 stdout，exit 0：
 
 ```json
-{
-  "app_id": "cli_xxxx",
-  "app_secret": "xxxxxxxx"
-}
+{"errcode": 0, "errmsg": "success", "data": {...}}
+{"errcode": 1, "errmsg": "错误说明\n建议：...", "data": {}}
 ```
 
-使用 `sandbox_file_operations` 读取后，通过 HTTP 请求飞书 API。
-
----
-
-## 一、获取飞书 Access Token
-
-所有 API 调用前需先获取 tenant_access_token：
-
-```python
-import json
-import uuid
-import requests
-
-# 读取凭证
-with open("/workspace/.config/feishu.json") as f:
-    creds = json.load(f)
-
-resp = requests.post(
-    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-    json={"app_id": creds["app_id"], "app_secret": creds["app_secret"]},
-    timeout=10,
-)
-data = resp.json()
-if data.get("code") != 0:
-    raise ValueError(f"获取 tenant_access_token 失败：code={data.get('code')}, msg={data.get('msg')}")
-token = data["tenant_access_token"]
-headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-```
-
----
-
-## 二、发送消息
-
-### 2.1 发送文字消息给用户（p2p）
-
-```python
-import uuid
-
-requests.post(
-    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
-    headers=headers,
-    json={
-        "receive_id": "ou_xxxx",           # 接收者 open_id
-        "msg_type": "text",
-        "content": json.dumps({"text": "你好，这是消息内容"}),
-        "uuid": str(uuid.uuid4()),          # 防重复发送（每次调用生成新 UUID）
-    },
-    timeout=10,
-)
-```
-
-### 2.2 发送消息到群组
-
-```python
-requests.post(
-    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-    headers=headers,
-    json={
-        "receive_id": "oc_xxxx",           # 群组 chat_id
-        "msg_type": "text",
-        "content": json.dumps({"text": "群组消息内容"}),
-    },
-    timeout=10,
-)
-```
-
-### 2.3 发送富文本（post 格式）
-
-```python
-content = {
-    "zh_cn": {
-        "title": "消息标题",
-        "content": [
-            [{"tag": "text", "text": "第一段内容"}],
-            [{"tag": "a", "text": "点击链接", "href": "https://example.com"}],
-        ]
-    }
-}
-requests.post(
-    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
-    headers=headers,
-    json={
-        "receive_id": "ou_xxxx",
-        "msg_type": "post",
-        "content": json.dumps(content),
-    },
-    timeout=10,
-)
-```
-
----
-
-## 三、读取飞书云文档
-
-### 3.1 获取文档纯文本内容
-
-```python
-doc_token = "doccnxxxxxxxx"  # 从文档 URL 中提取
-resp = requests.get(
-    f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_token}/raw_content",
-    headers=headers,
-    timeout=30,
-)
-content = resp.json()["data"]["content"]
-```
-
-### 3.2 读取电子表格数据
-
-```python
-spreadsheet_token = "shtcnxxxxxxxx"
-sheet_id = "Sheet1"
-resp = requests.get(
-    f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{sheet_id}",
-    headers=headers,
-    timeout=30,
-)
-values = resp.json()["data"]["valueRange"]["values"]
-```
-
----
-
-## 四、查询群成员
-
-```python
-chat_id = "oc_xxxx"
-members = []
-page_token = ""
-
-while True:
-    params = {"member_id_type": "open_id", "page_size": 100}
-    if page_token:
-        params["page_token"] = page_token
-    resp = requests.get(
-        f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}/members",
-        headers=headers,
-        params=params,
-        timeout=10,
-    )
-    data = resp.json()["data"]
-    members.extend(data.get("items", []))
-    if not data.get("has_more"):
-        break
-    page_token = data.get("page_token", "")
-```
-
----
-
-## 五、错误处理
-
-飞书 API 返回 `code != 0` 时视为错误：
-
-```python
-result = resp.json()
-if result.get("code") != 0:
-    raise ValueError(f"飞书 API 错误：code={result['code']}, msg={result.get('msg')}")
-```
-
-常见错误码：
-- `99991663`：token 失效，重新获取后重试
-- `230013`：消息内容格式错误，检查 content JSON
-- `230002`：接收方 ID 无效，确认 open_id / chat_id 是否正确
-
----
-
-## 六、输出格式规范
-
-成功时返回：
-```json
-{
-  "errcode": 0,
-  "errmsg": "success",
-  "data": {
-    "message_id": "om_xxxx",       // 发送消息时
-    "content": "文档内容...",       // 读取文档时
-    "members": [...]               // 查询群成员时
-  }
-}
-```
-
-失败时返回：
-```json
-{
-  "errcode": 1,
-  "errmsg": "飞书 API 调用失败：code=230013, msg=...\n建议：检查 receive_id 格式是否正确，p2p 消息用 open_id，群消息用 chat_id",
-  "data": {}
-}
-```
+`errcode=0` 表示成功，`errcode=1` 表示失败（`errmsg` 包含具体原因和建议）。

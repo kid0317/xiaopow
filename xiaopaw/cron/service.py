@@ -45,6 +45,7 @@ class CronService:
         self._tick_interval = tick_interval
         self._tasks_path = data_dir / "cron" / "tasks.json"
         self._last_mtime: float = 0.0
+        self._last_size: int = -1
         self._task: asyncio.Task[None] | None = None
         self._running = False
         self.jobs: list[CronJob] = []
@@ -167,10 +168,13 @@ class CronService:
             self.jobs = []
             self._disabled_jobs_raw = []
             self._last_mtime = 0.0
+            self._last_size = -1
             return
 
         try:
-            self._last_mtime = self._tasks_path.stat().st_mtime
+            st = self._tasks_path.stat()
+            self._last_mtime = st.st_mtime
+            self._last_size = st.st_size
             data = json.loads(self._tasks_path.read_text())
             self.jobs = []
             self._disabled_jobs_raw = []
@@ -196,11 +200,16 @@ class CronService:
             self.jobs = []
 
     def _check_mtime(self) -> bool:
-        """检测 tasks.json 是否被外部修改（包括被删除）。"""
+        """检测 tasks.json 是否被外部修改（包括被删除）。
+
+        同时检查 mtime 和文件大小，避免在高精度不足的文件系统（如 tmpfs）上
+        两次写入落在同一 mtime tick 内导致漏检。
+        """
         if not self._tasks_path.exists():
             return self._last_mtime != 0.0
         try:
-            return self._tasks_path.stat().st_mtime != self._last_mtime
+            st = self._tasks_path.stat()
+            return st.st_mtime != self._last_mtime or st.st_size != self._last_size
         except OSError:
             return False
 
@@ -213,7 +222,9 @@ class CronService:
         tmp = self._tasks_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(output, ensure_ascii=False))
         tmp.rename(self._tasks_path)
-        self._last_mtime = self._tasks_path.stat().st_mtime
+        st = self._tasks_path.stat()
+        self._last_mtime = st.st_mtime
+        self._last_size = st.st_size
 
     @staticmethod
     def _job_to_dict(job: CronJob) -> dict:

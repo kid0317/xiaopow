@@ -57,9 +57,9 @@ xiaopaw/
 ├── runner.py                # Core orchestrator: session → slash cmd → agent → store → send
 ├── agents/
 │   ├── main_crew.py         # Main Crew (single SkillLoaderTool)
-│   └── skill_crew.py        # (TODO) Sub-Crew factory (build_skill_crew)
+│   └── skill_crew.py        # Sub-Crew factory (build_skill_crew)
 ├── tools/
-│   ├── skill_loader.py          # (TODO) SkillLoaderTool (progressive disclosure + Sub-Crew trigger)
+│   ├── skill_loader.py          # SkillLoaderTool (progressive disclosure + Sub-Crew trigger)
 │   ├── add_image_tool_local.py  # AddImageToolLocal: local image → base64 data URL for multimodal LLM
 │   ├── baidu_search_tool.py     # BaiduSearchTool: Baidu Qianfan web_search wrapper
 │   └── intermediate_tool.py     # IntermediateTool: save intermediate thinking products
@@ -71,14 +71,16 @@ xiaopaw/
 │   ├── manager.py           # index.json + JSONL read/write
 │   └── models.py            # Session / SessionEntry dataclasses
 ├── cron/
-│   ├── service.py           # asyncio timer + mtime hot-reload
+│   ├── service.py           # asyncio timer + mtime+size hot-reload
 │   └── models.py            # CronJob / CronSchedule / CronPayload
 ├── cleanup/
-│   └── service.py           # (TODO) Storage cleanup by policy
+│   └── service.py           # Storage cleanup by policy (sweep + ensure_workspace_dirs + write_feishu_credentials)
 ├── skills/                  # SKILL.md + scripts per skill
-│   ├── file_processor/      # PDF/DOCX parsing and conversion
+│   ├── pdf/                 # PDF parsing and text extraction
+│   ├── docx/                # Word document processing
+│   ├── pptx/                # PowerPoint processing
+│   ├── xlsx/                # Excel spreadsheet processing
 │   ├── feishu_ops/          # Read docs, send messages via Feishu API
-│   ├── baidu_search/        # Baidu search with summarization
 │   ├── scheduler_mgr/       # Create/list/delete cron jobs (config only, not execution)
 │   └── history_reader/      # Paginated conversation history reader (reference skill)
 └── data/                    # Runtime data (.gitignore)
@@ -117,19 +119,26 @@ Sub-Crews connect to AIO-Sandbox MCP with exactly 4 allowed tools:
 ## Commands
 
 ```bash
-# Run all tests with coverage (use venv python)
-.venv/bin/python -m pytest tests/ -v --cov=xiaopaw --cov-report=term-missing
+# Run all unit tests with coverage
+python3 -m pytest tests/unit/ -v --cov=xiaopaw --cov-report=term-missing
 
 # Run a single test file
-.venv/bin/python -m pytest tests/unit/test_cron_service.py -v
+python3 -m pytest tests/unit/test_cron_service.py -v
 
 # Run a specific test
-.venv/bin/python -m pytest tests/unit/test_runner.py::TestSlashNew::test_creates_new_session -v
+python3 -m pytest tests/unit/test_runner.py::TestSlashNew::test_creates_new_session -v
+
+# Run integration tests (no LLM)
+python3 -m pytest tests/integration/ -m "not llm" -v
+
+# Run integration tests (with LLM)
+export QWEN_API_KEY=<your_key>
+python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not sandbox" -v -s
 ```
 
 ## Development Progress
 
-**Completed modules** (with tests):
+**All modules implemented** (with tests):
 - `xiaopaw/models.py` — InboundMessage, Attachment, SenderProtocol
 - `xiaopaw/session/models.py` — SessionEntry, RoutingEntry, MessageEntry
 - `xiaopaw/session/manager.py` — SessionManager (index.json + JSONL, concurrent-safe)
@@ -139,36 +148,35 @@ Sub-Crews connect to AIO-Sandbox MCP with exactly 4 allowed tools:
 - `xiaopaw/runner.py` — Runner (per-routing_key queue, slash commands, agent_fn DI)
 - `xiaopaw/feishu/session_key.py` — resolve_routing_key (pure function)
 - `xiaopaw/cron/models.py` — CronJob, CronSchedule, CronPayload, CronState
-- `xiaopaw/cron/service.py` — CronService (tick-based scheduler, mtime hot-reload)
+- `xiaopaw/cron/service.py` — CronService (tick-based scheduler, mtime+size hot-reload)
 - `xiaopaw/feishu/listener.py` — FeishuListener wired to WebSocket (im.message.receive_v1 → Runner.dispatch)
 - `xiaopaw/feishu/sender.py` — FeishuSender (lark-oapi, p2p/group/thread text send)
-- `xiaopaw/main.py` — Minimal entry point: load config.yaml, start Runner + FeishuListener, fixed reply "收到，session={id}"
+- `xiaopaw/feishu/downloader.py` — FeishuDownloader: 附件下载到 workspace/sessions/{sid}/uploads/
+- `xiaopaw/main.py` — Full entry point: load config.yaml, start all services (Listener + CronService + CleanupService + TestAPI + metrics)
 - `xiaopaw/llm/aliyun_llm.py` — AliyunLLM: CrewAI `BaseLLM` adapter for Qwen (sync/async, retries, function calling, multimodal)
 - `xiaopaw/tools/add_image_tool_local.py` — AddImageToolLocal: 本地图片 → base64 data URL，含路径遍历防护
 - `xiaopaw/tools/baidu_search_tool.py` — BaiduSearchTool: 百度千帆 web_search 封装
 - `xiaopaw/tools/intermediate_tool.py` — IntermediateTool: 中间思考产物保存
+- `xiaopaw/tools/skill_loader.py` — SkillLoaderTool: 渐进式披露 + Sub-Crew 触发
 - `xiaopaw/observability/metrics.py` — Prometheus metrics 定义与 helper 函数
 - `xiaopaw/observability/metrics_server.py` — /metrics aiohttp 服务（含 AppRunner 清理）
-- `xiaopaw/feishu/downloader.py` — FeishuDownloader: 附件下载到 workspace/sessions/{sid}/uploads/
 - `xiaopaw/agents/main_crew.py` — MainCrew: build_agent_fn() 工厂，YAML prompts，verbose step_callback，历史截断
+- `xiaopaw/agents/skill_crew.py` — SubCrew: build_skill_crew() 工厂，AIO-Sandbox MCP 接入，4工具白名单
 - `xiaopaw/agents/models.py` — MainTaskOutput Pydantic 输出模型
 - `xiaopaw/agents/config/agents.yaml` — Orchestrator Agent 配置（role/goal/backstory/max_iter）
 - `xiaopaw/agents/config/tasks.yaml` — 主任务配置（description/expected_output）
-- `xiaopaw/skills/history_reader/SKILL.md` — history_reader Skill（分页读取历史对话）
+- `xiaopaw/cleanup/service.py` — CleanupService: 启动时 sweep + ensure_workspace_dirs + write_feishu_credentials
+- `xiaopaw/skills/history_reader/SKILL.md` — history_reader Skill（分页读取历史对话，reference 型）
+- `xiaopaw/skills/feishu_ops/SKILL.md` — feishu_ops Skill（飞书文档读取与消息发送，task 型）
+- `xiaopaw/skills/scheduler_mgr/SKILL.md` — scheduler_mgr Skill（定时任务创建/查看/删除，task 型）
+- `xiaopaw/skills/pdf/` `docx/` `pptx/` `xlsx/` — 文件处理 Skills（task 型）
 
-**Test stats**: 253 tests, 88.17% coverage ✅
+**Test stats**: 309 unit tests, 83.27% coverage ✅ | 50 integration tests
 
 ## Known Issues / Code Quality
-
-Full report: run `/everything-claude-code:python-review` to re-evaluate.
 
 Last review: 2026-03-05. All CRITICAL and HIGH issues fixed. Remaining MEDIUM:
 
 | # | File | Issue | Status |
 |---|------|-------|--------|
 | M1 | `aliyun_llm.py:110-139` | `_normalize_multimodal_tool_result` 用脆弱字符串匹配检测图片 URL，易被注入破坏 | open |
-
-**Not yet implemented**:
-- `agents/skill_crew.py` — Sub-Crew factory
-- `tools/skill_loader.py` — SkillLoaderTool
-- `cleanup/service.py` — Storage cleanup

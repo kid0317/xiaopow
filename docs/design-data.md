@@ -1,5 +1,5 @@
 > 本文档是 [DESIGN.md](../DESIGN.md) §5 的详细内容
-> 最后更新：2026-03-05
+> 最后更新：2026-03-06
 
 ## 5. 数据设计
 
@@ -272,17 +272,26 @@ version: "1.0"
 
 ```yaml
 skills:
-  - name: file_processor
-    path: ./skills/file_processor
+  - name: pdf
+    type: task
+    enabled: true
+  - name: docx
+    type: task
+    enabled: true
+  - name: pptx
+    type: task
+    enabled: true
+  - name: xlsx
+    type: task
     enabled: true
   - name: feishu_ops
-    path: ./skills/feishu_ops
-    enabled: true
-  - name: baidu_search
-    path: ./skills/baidu_search
+    type: task
     enabled: true
   - name: scheduler_mgr
-    path: ./skills/scheduler_mgr
+    type: task
+    enabled: true
+  - name: history_reader
+    type: reference
     enabled: true
 ```
 
@@ -291,20 +300,32 @@ skills:
 ```xml
 <skills>
   <skill type="task">
-    <name>file_processor</name>
-    <description>PDF/DOCX 解析与格式转换，支持 PDF→DOCX、PDF→Markdown</description>
+    <name>pdf</name>
+    <description>PDF 解析与文本提取，支持格式转换</description>
+  </skill>
+  <skill type="task">
+    <name>docx</name>
+    <description>Word 文档读取与处理</description>
+  </skill>
+  <skill type="task">
+    <name>pptx</name>
+    <description>PowerPoint 文档读取与处理</description>
+  </skill>
+  <skill type="task">
+    <name>xlsx</name>
+    <description>Excel 表格读取与数据处理</description>
   </skill>
   <skill type="task">
     <name>feishu_ops</name>
     <description>飞书操作：读取云文档内容、向指定群/用户发消息</description>
   </skill>
   <skill type="task">
-    <name>baidu_search</name>
-    <description>百度搜索并摘要返回结果，适合信息检索类任务</description>
-  </skill>
-  <skill type="task">
     <name>scheduler_mgr</name>
     <description>创建/查看/删除定时任务，支持一次性/周期/cron 三种触发模式</description>
+  </skill>
+  <skill type="reference">
+    <name>history_reader</name>
+    <description>分页读取历史对话记录，适合"我之前说过什么"类查询</description>
   </skill>
 </skills>
 ```
