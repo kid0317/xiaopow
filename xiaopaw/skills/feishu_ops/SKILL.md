@@ -168,6 +168,144 @@ python {_skill_base}/scripts/create_event.py \
 
 ---
 
+## 五、创建飞书文档 / 电子表格
+
+### create_doc.py — 创建飞书文档（Docx）
+
+```
+python {_skill_base}/scripts/create_doc.py \
+    --title "季度报告" \
+    [--folder_token <token>]
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--title` | ✅ | 文档标题 |
+| `--folder_token` | 否 | 目标文件夹 token；留空则放在应用云空间根目录 |
+
+返回 `data.document_id`（文档 ID）和 `data.url`。
+
+---
+
+### create_sheet.py — 创建飞书电子表格（Spreadsheet）
+
+```
+python {_skill_base}/scripts/create_sheet.py \
+    --title "销售数据" \
+    [--folder_token <token>]
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--title` | ✅ | 表格标题 |
+| `--folder_token` | 否 | 目标文件夹 token；留空则放在应用云空间根目录 |
+
+返回 `data.spreadsheet_token` 和 `data.url`。
+
+---
+
+### write_sheet.py — 向电子表格写入数据
+
+```
+python {_skill_base}/scripts/write_sheet.py \
+    --sheet "https://xxx.feishu.cn/sheets/shtcnXXXX" \
+    --values '[["姓名","年龄","部门"],["Alice",30,"工程"],["Bob",25,"设计"]]' \
+    [--start_cell A1] \
+    [--sheet_id Sheet1]
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--sheet` | ✅ | 电子表格 URL 或 spreadsheet_token |
+| `--values` | ✅ | JSON 二维数组，第一行通常为表头 |
+| `--start_cell` | 否 | 写入起始单元格，默认 `A1` |
+| `--sheet_id` | 否 | Sheet ID，不填则写入第一个 Sheet |
+
+返回 `data.range`（实际写入范围）和 `data.rows_written`。
+
+---
+
+## 六、多维表格（Bitable）操作
+
+### create_bitable.py — 创建多维表格应用
+
+```
+python {_skill_base}/scripts/create_bitable.py \
+    --name "项目管理" \
+    [--folder_token <token>]
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--name` | ✅ | 多维表格名称 |
+| `--folder_token` | 否 | 目标文件夹 token；留空则放在应用云空间根目录 |
+
+返回 `data.app_token` 和 `data.url`（后续创建数据表时需要此 token）。
+
+---
+
+### create_bitable_table.py — 在多维表格内创建数据表
+
+```
+python {_skill_base}/scripts/create_bitable_table.py \
+    --app "https://xxx.feishu.cn/base/BxxXXXX" \
+    --name "任务清单" \
+    --fields '[
+        {"name": "任务名称", "type": "text"},
+        {"name": "优先级", "type": "select", "options": ["高","中","低"]},
+        {"name": "标签", "type": "multiselect", "options": ["前端","后端","设计"]},
+        {"name": "截止日期", "type": "date"},
+        {"name": "完成", "type": "checkbox"},
+        {"name": "工时(h)", "type": "number"},
+        {"name": "参考链接", "type": "url"}
+    ]'
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--app` | ✅ | 多维表格 URL 或 app_token |
+| `--name` | ✅ | 数据表名称 |
+| `--fields` | 否 | JSON 数组，定义字段结构（见下表） |
+
+**字段类型（`type` 值）**：
+
+| type | 说明 | 是否需要 options |
+|------|------|----------------|
+| `text` | 多行文本 | 否 |
+| `number` | 数字 | 否 |
+| `select` | 单选 | ✅（options 数组） |
+| `multiselect` | 多选 | ✅（options 数组） |
+| `date` | 日期 | 否 |
+| `checkbox` | 勾选框 | 否 |
+| `url` | 超链接 | 否 |
+
+返回 `data.table_id`（后续写入记录时需要）和 `data.fields_created`（已创建字段列表）。
+
+---
+
+### write_bitable_records.py — 批量写入多维表格记录
+
+```
+python {_skill_base}/scripts/write_bitable_records.py \
+    --app "https://xxx.feishu.cn/base/BxxXXXX" \
+    --table_id tblXXXXXX \
+    --records '[
+        {"任务名称": "完成 API 文档", "优先级": "高", "完成": false},
+        {"任务名称": "代码 Review", "优先级": "中", "完成": true}
+    ]'
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--app` | ✅ | 多维表格 URL 或 app_token |
+| `--table_id` | ✅ | 数据表 ID（`create_bitable_table.py` 返回的 `table_id`） |
+| `--records` | ✅ | JSON 数组，每项为一条记录（键为字段名称） |
+
+- 每批最多 500 条，超过自动分批；字段键直接用字段名称（无需字段 ID）。
+- 返回 `data.record_count`（成功写入数量）和 `data.record_ids`。
+
+---
+
 ## 输出格式
 
 所有脚本统一输出 JSON 到 stdout，exit 0：
@@ -178,3 +316,4 @@ python {_skill_base}/scripts/create_event.py \
 ```
 
 `errcode=0` 表示成功，`errcode=1` 表示失败（`errmsg` 包含具体原因和建议）。
+

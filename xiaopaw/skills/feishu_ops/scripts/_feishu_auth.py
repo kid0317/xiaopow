@@ -100,6 +100,20 @@ def parse_sheet_token(url_or_token: str) -> str:
     return url_or_token.strip().rstrip("/")
 
 
+def parse_bitable_token(url_or_token: str) -> str:
+    """从飞书多维表格 URL 或 token 字符串中提取 app_token。
+
+    支持：
+    - https://xxx.feishu.cn/base/{token}
+    - https://xxx.feishu.cn/base/{token}?table=tblXXX
+    - 直接传 token
+    """
+    m = re.search(r"/base/([A-Za-z0-9_-]+)", url_or_token)
+    if m:
+        return m.group(1)
+    return url_or_token.strip().rstrip("/")
+
+
 # ───────────────────────── 输出规范 ─────────────────────────
 
 

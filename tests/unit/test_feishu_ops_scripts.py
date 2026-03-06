@@ -453,3 +453,417 @@ class TestGetChatMembers:
                             self.mod.main()
         out = json.loads(capsys.readouterr().out)
         assert out["data"]["member_count"] == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# parse_bitable_token 测试（_feishu_auth 模块扩展）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestParseBitableToken:
+    """测试 _feishu_auth.parse_bitable_token。"""
+
+    def setup_method(self):
+        self.auth = _import_script("_feishu_auth")
+
+    def test_parse_from_url(self):
+        url = "https://company.feishu.cn/base/BitableABC123"
+        assert self.auth.parse_bitable_token(url) == "BitableABC123"
+
+    def test_parse_from_url_with_query_params(self):
+        url = "https://company.feishu.cn/base/BitableABC123?table=tblXXXX&view=vewYYYY"
+        assert self.auth.parse_bitable_token(url) == "BitableABC123"
+
+    def test_parse_bare_token(self):
+        assert self.auth.parse_bitable_token("BitableABC123") == "BitableABC123"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# create_doc.py 测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCreateDoc:
+    def setup_method(self):
+        self.mod = _import_script("create_doc")
+
+    def test_creates_doc_with_title(self, capsys):
+        api_resp = _make_api_resp(data={"document": {"document_id": "doc_test_001"}})
+        argv = ["--title", "季度报告"]
+        with patch("sys.argv", ["create_doc.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["document_id"] == "doc_test_001"
+        assert out["data"]["title"] == "季度报告"
+        assert "doc_test_001" in out["data"]["url"]
+
+    def test_creates_doc_with_folder_token(self, capsys):
+        api_resp = _make_api_resp(data={"document": {"document_id": "doc_folder_001"}})
+        argv = ["--title", "项目文档", "--folder_token", "fldcnXXXXXX"]
+        with patch("sys.argv", ["create_doc.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]) as mock_post:
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        # 确认 folder_token 包含在创建请求体中
+        create_call = mock_post.call_args_list[1]
+        assert create_call.kwargs["json"]["folder_token"] == "fldcnXXXXXX"
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+
+    def test_api_error_returns_errcode_1(self, capsys):
+        api_resp = MagicMock()
+        api_resp.json.return_value = {"code": 99991400, "msg": "permission denied"}
+        argv = ["--title", "失败文档"]
+        with patch("sys.argv", ["create_doc.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "99991400" in out["errmsg"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# create_sheet.py 测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCreateSheet:
+    def setup_method(self):
+        self.mod = _import_script("create_sheet")
+
+    def test_creates_sheet_with_title(self, capsys):
+        api_resp = _make_api_resp(data={
+            "spreadsheet": {
+                "spreadsheet_token": "sht_test_001",
+                "url": "https://xxx.feishu.cn/sheets/sht_test_001",
+            }
+        })
+        argv = ["--title", "销售数据"]
+        with patch("sys.argv", ["create_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["spreadsheet_token"] == "sht_test_001"
+        assert out["data"]["title"] == "销售数据"
+        assert "sht_test_001" in out["data"]["url"]
+
+    def test_creates_sheet_with_folder_token(self, capsys):
+        api_resp = _make_api_resp(data={
+            "spreadsheet": {"spreadsheet_token": "sht_folder_001", "url": "https://xxx.feishu.cn"}
+        })
+        argv = ["--title", "周报", "--folder_token", "fldcnYYYYYY"]
+        with patch("sys.argv", ["create_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]) as mock_post:
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        create_call = mock_post.call_args_list[1]
+        assert create_call.kwargs["json"]["folder_token"] == "fldcnYYYYYY"
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+
+    def test_api_error_returns_errcode_1(self, capsys):
+        api_resp = MagicMock()
+        api_resp.json.return_value = {"code": 99991400, "msg": "no permission"}
+        argv = ["--title", "失败表格"]
+        with patch("sys.argv", ["create_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# write_sheet.py 测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWriteSheet:
+    def setup_method(self):
+        self.mod = _import_script("write_sheet")
+
+    def test_col_letter_basic(self):
+        assert self.mod._col_letter(1) == "A"
+        assert self.mod._col_letter(26) == "Z"
+        assert self.mod._col_letter(27) == "AA"
+        assert self.mod._col_letter(28) == "AB"
+
+    def test_end_cell_calculation(self):
+        # A1 + 3行4列 → D3
+        assert self.mod._end_cell("A1", 3, 4) == "D3"
+        # B2 + 2行2列 → C3
+        assert self.mod._end_cell("B2", 2, 2) == "C3"
+
+    def test_writes_with_explicit_sheet_id(self, capsys):
+        values = [["姓名", "年龄"], ["Alice", 30], ["Bob", 25]]
+        write_resp = MagicMock()
+        write_resp.json.return_value = {"code": 0, "data": {"revision": 1}}
+        argv = [
+            "--sheet", "sht_test_001",
+            "--values", json.dumps(values),
+            "--sheet_id", "sh001",
+        ]
+        with patch("sys.argv", ["write_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", return_value=_make_token_resp()):
+                    with patch("requests.put", return_value=write_resp):
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["rows_written"] == 3
+        assert out["data"]["cols_written"] == 2
+        assert out["data"]["sheet_id"] == "sh001"
+
+    def test_writes_auto_fetch_first_sheet(self, capsys):
+        values = [["A", "B"], ["1", "2"]]
+        sheets_resp = _make_api_resp(data={"sheets": [{"sheet_id": "auto_sh001"}]})
+        write_resp = MagicMock()
+        write_resp.json.return_value = {"code": 0, "data": {"revision": 1}}
+        argv = ["--sheet", "sht_test_001", "--values", json.dumps(values)]
+        with patch("sys.argv", ["write_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", return_value=_make_token_resp()):
+                    with patch("requests.get", return_value=sheets_resp):
+                        with patch("requests.put", return_value=write_resp):
+                            with pytest.raises(SystemExit):
+                                self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["sheet_id"] == "auto_sh001"
+
+    def test_invalid_values_json(self, capsys):
+        argv = ["--sheet", "sht_test_001", "--values", "not-json", "--sheet_id", "sh001"]
+        with patch("sys.argv", ["write_sheet.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", return_value=_make_token_resp()):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "JSON" in out["errmsg"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# create_bitable.py 测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCreateBitable:
+    def setup_method(self):
+        self.mod = _import_script("create_bitable")
+
+    def test_creates_bitable(self, capsys):
+        api_resp = _make_api_resp(data={
+            "app": {"app_token": "bitable_001", "url": "https://xxx.feishu.cn/base/bitable_001"}
+        })
+        argv = ["--name", "项目管理"]
+        with patch("sys.argv", ["create_bitable.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["app_token"] == "bitable_001"
+        assert out["data"]["name"] == "项目管理"
+        assert "bitable_001" in out["data"]["url"]
+
+    def test_creates_bitable_with_folder_token(self, capsys):
+        api_resp = _make_api_resp(data={
+            "app": {"app_token": "bitable_002", "url": "https://xxx.feishu.cn/base/bitable_002"}
+        })
+        argv = ["--name", "销售数据", "--folder_token", "fldcnZZZZZZ"]
+        with patch("sys.argv", ["create_bitable.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]) as mock_post:
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        create_call = mock_post.call_args_list[1]
+        assert create_call.kwargs["json"]["folder_token"] == "fldcnZZZZZZ"
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+
+    def test_api_error_returns_errcode_1(self, capsys):
+        api_resp = MagicMock()
+        api_resp.json.return_value = {"code": 99991400, "msg": "no permission"}
+        argv = ["--name", "失败多维表格"]
+        with patch("sys.argv", ["create_bitable.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), api_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# create_bitable_table.py 测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCreateBitableTable:
+    def setup_method(self):
+        self.mod = _import_script("create_bitable_table")
+
+    def test_build_field_body_text(self):
+        body = self.mod._build_field_body({"name": "任务名称", "type": "text"})
+        assert body["field_name"] == "任务名称"
+        assert body["type"] == 1  # text → 1
+        assert "property" not in body
+
+    def test_build_field_body_select_with_options(self):
+        body = self.mod._build_field_body({
+            "name": "优先级",
+            "type": "select",
+            "options": ["高", "中", "低"],
+        })
+        assert body["field_name"] == "优先级"
+        assert body["type"] == 3  # select → 3
+        assert body["property"]["options"] == [{"name": "高"}, {"name": "中"}, {"name": "低"}]
+
+    def test_build_field_body_unsupported_type(self, capsys):
+        with pytest.raises(SystemExit):
+            self.mod._build_field_body({"name": "未知字段", "type": "unsupported_xyz"})
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "unsupported_xyz" in out["errmsg"]
+
+    def test_creates_table_with_fields(self, capsys):
+        # _create_table: 1 token POST + 1 tables POST
+        # _create_field(×1): 1 token POST + 1 fields POST  → 4 POSTs total
+        table_resp = _make_api_resp(data={"table_id": "tbl_test_001"})
+        field_resp = _make_api_resp(data={"field": {"field_id": "fld_text_001"}})
+        fields_json = json.dumps([{"name": "任务名称", "type": "text"}])
+        argv = ["--app", "bitable_token_001", "--name", "任务清单", "--fields", fields_json]
+        with patch("sys.argv", ["create_bitable_table.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[
+                    _make_token_resp(), table_resp, _make_token_resp(), field_resp
+                ]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["table_id"] == "tbl_test_001"
+        assert out["data"]["table_name"] == "任务清单"
+        assert len(out["data"]["fields_created"]) == 1
+        assert out["data"]["fields_created"][0]["name"] == "任务名称"
+
+    def test_creates_table_without_fields(self, capsys):
+        # 不传 --fields，默认空列表，只有 _create_table 的 2 个 POST
+        table_resp = _make_api_resp(data={"table_id": "tbl_empty_001"})
+        argv = ["--app", "bitable_token_001", "--name", "空数据表"]
+        with patch("sys.argv", ["create_bitable_table.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", side_effect=[_make_token_resp(), table_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["table_id"] == "tbl_empty_001"
+        assert out["data"]["fields_created"] == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# write_bitable_records.py 测试
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWriteBitableRecords:
+    def setup_method(self):
+        self.mod = _import_script("write_bitable_records")
+
+    def test_writes_records(self, capsys):
+        records = [
+            {"任务名称": "完成 API 文档", "优先级": "高"},
+            {"任务名称": "代码 Review", "优先级": "中"},
+        ]
+        batch_resp = _make_api_resp(data={
+            "records": [{"record_id": "rec_001"}, {"record_id": "rec_002"}]
+        })
+        argv = [
+            "--app", "bitable_token_001",
+            "--table_id", "tbl_test_001",
+            "--records", json.dumps(records),
+        ]
+        with patch("sys.argv", ["write_bitable_records.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                # _batch_create: 1 token POST + 1 batch_create POST
+                with patch("requests.post", side_effect=[_make_token_resp(), batch_resp]):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["record_count"] == 2
+        assert "rec_001" in out["data"]["record_ids"]
+        assert "rec_002" in out["data"]["record_ids"]
+
+    def test_batch_splits_large_records(self, capsys):
+        """验证超过 _BATCH_SIZE 时自动分批写入。"""
+        records = [{"名称": f"任务{i}"} for i in range(3)]
+        batch1_resp = _make_api_resp(data={
+            "records": [{"record_id": "rec_001"}, {"record_id": "rec_002"}]
+        })
+        batch2_resp = _make_api_resp(data={"records": [{"record_id": "rec_003"}]})
+        argv = [
+            "--app", "bitable_token_001",
+            "--table_id", "tbl_test_001",
+            "--records", json.dumps(records),
+        ]
+        with patch("sys.argv", ["write_bitable_records.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                # 将 _BATCH_SIZE 缩小为 2 触发分批（3条 → 2批）
+                with patch.object(self.mod, "_BATCH_SIZE", 2):
+                    # 批1: token + batch_create；批2: token + batch_create → 4 POSTs
+                    with patch("requests.post", side_effect=[
+                        _make_token_resp(), batch1_resp, _make_token_resp(), batch2_resp
+                    ]) as mock_post:
+                        with pytest.raises(SystemExit):
+                            self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 0
+        assert out["data"]["record_count"] == 3
+        assert mock_post.call_count == 4  # 2 token + 2 batch_create
+
+    def test_invalid_records_json(self, capsys):
+        argv = [
+            "--app", "bitable_token_001",
+            "--table_id", "tbl_test_001",
+            "--records", "not-json",
+        ]
+        with patch("sys.argv", ["write_bitable_records.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", return_value=_make_token_resp()):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "JSON" in out["errmsg"]
+
+    def test_empty_records_returns_error(self, capsys):
+        argv = [
+            "--app", "bitable_token_001",
+            "--table_id", "tbl_test_001",
+            "--records", "[]",
+        ]
+        with patch("sys.argv", ["write_bitable_records.py"] + argv):
+            with patch("builtins.open", mock_open(read_data=FAKE_CREDS)):
+                with patch("requests.post", return_value=_make_token_resp()):
+                    with pytest.raises(SystemExit):
+                        self.mod.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["errcode"] == 1
+        assert "空" in out["errmsg"]
