@@ -66,6 +66,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "integration: 集成测试（与外部服务交互）",
     )
+    config.addinivalue_line(
+        "markers",
+        "feishu: 需要真实飞书凭证（FEISHU_APP_ID + FEISHU_APP_SECRET）的实况测试",
+    )
 
 
 # ── Session 级别 Fixtures（检查一次）─────────────────────────────────────────
