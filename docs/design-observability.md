@@ -1,5 +1,5 @@
 > 本文档是 [DESIGN.md](../DESIGN.md) §13 的详细内容
-> 最后更新：2026-03-06
+> 最后更新：2026-03-10
 
 ## 13. 可观测性设计（Logging & Metrics）
 
@@ -9,10 +9,18 @@
 
 #### 13.1.1 日志后端
 
-- 仍使用 Python 标准库 `logging`，在 `main.py` 中统一初始化：
-  - 控制台：人类可读格式（开发调试）
-  - 文件：结构化 JSON 行日志，便于分析与收集
+- 使用 Python 标准库 `logging`，在 `main.py` 中统一调用 `setup_logging()` 初始化：
+  - **控制台**：人类可读格式（`[时间] [级别] [模块] 消息`），便于开发调试时直接查看
+  - **文件**：结构化 JSON 行日志，写入 `data/logs/xiaopaw.log`，便于分析与收集
 - 日志文件位置：`data/logs/xiaopaw.log`（滚动日志，单文件 50MB，保留 5 个）
+- Root logger 默认级别：`INFO`（`setup_logging()` 显式设置，避免 Python 默认 WARNING 级别导致日志丢失）
+- 避免重复 handler：`setup_logging()` 检测 handler 类型，多次调用安全（如测试环境）
+
+**调试选项**：
+
+| 环境变量 | 说明 |
+|---------|------|
+| `QWEN_DEBUG_PAYLOAD=1` | 将 LLM 请求完整 payload 以 INFO 级别写入日志（默认关闭，避免日志过大） |
 
 #### 13.1.2 JSON 行日志格式
 

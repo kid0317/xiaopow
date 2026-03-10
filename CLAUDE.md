@@ -74,7 +74,7 @@ xiaopaw/
 │   ├── service.py           # asyncio timer + mtime+size hot-reload
 │   └── models.py            # CronJob / CronSchedule / CronPayload
 ├── cleanup/
-│   └── service.py           # Storage cleanup by policy (sweep + ensure_workspace_dirs + write_feishu_credentials)
+│   └── service.py           # Storage cleanup by policy (sweep + ensure_workspace_dirs + write_feishu/baidu_credentials)
 ├── skills/                  # SKILL.md + scripts per skill
 │   ├── pdf/                 # PDF parsing and text extraction
 │   ├── docx/                # Word document processing
@@ -82,6 +82,8 @@ xiaopaw/
 │   ├── xlsx/                # Excel spreadsheet processing
 │   ├── feishu_ops/          # Read docs, send messages via Feishu API
 │   ├── scheduler_mgr/       # Create/list/delete cron jobs (config only, not execution)
+│   ├── baidu_search/        # Baidu Qianfan web search (credentials: .config/baidu.json)
+│   ├── web_browse/          # Web content extraction + browser automation (browser_* tools)
 │   └── history_reader/      # Paginated conversation history reader (reference skill)
 └── data/                    # Runtime data (.gitignore)
     ├── sessions/            # index.json + {sid}.jsonl
@@ -104,7 +106,10 @@ xiaopaw/
 - **Test API** (`debug.enable_test_api`) — HTTP endpoint simulates Feishu events via `POST /api/test/message`, injects into Runner with a `CaptureSender` that returns bot replies synchronously. Runner accepts a `SenderProtocol` (production: `FeishuSender`, test: `CaptureSender`). Supports file attachment upload via `attachment.file_path` field.
 - **session_id security** — session_id never enters the LLM context (not in `tasks.yaml` template, not in `akickoff(inputs={})`). SkillLoaderTool holds it as `_session_id` PrivateAttr and injects only the actual path strings into tool descriptions. LLM cannot read or manipulate session_id.
 - **history_reader inline** — `history_reader` Skill is handled inline by SkillLoaderTool (no Sub-Crew, no sandbox). SkillLoaderTool receives the full history list via `history_all` constructor param and paginates from memory. LLM passes only `page` / `page_size`.
+- **Sub-Crew MCP tools** — All AIO-Sandbox MCP tools are exposed (no whitelist filter). Tool constraints are enforced via Agent backstory behavioral rules instead of `create_static_tool_filter`. This enables `browser_*` tools for `web_browse` Skill.
+- **SKILL.md template variable safety** — `_get_skill_instructions()` escapes `{var}` → `{{var}}` in SKILL.md content. `_CREWAI_VAR_PATTERN` then collects all variables CrewAI's regex would still find (inside `{{var}}`), injecting them as self-mapping inputs to `akickoff()` to prevent "Template variable not found" errors.
 - **feishu_ops script architecture** — feishu_ops Skill uses standalone Python scripts under `skills/feishu_ops/scripts/`. Each operation (send_text, send_image, send_file, read_doc, read_sheet, get_chat_members, list_events, create_event) is a separate script sharing `_feishu_auth.py`. All output JSON to stdout, exit 0. Credentials read from `/workspace/.config/feishu.json`.
+- **baidu_search credentials** — `CleanupService.write_baidu_credentials()` writes BAIDU_API_KEY to sandbox `.config/baidu.json` at startup (mode 0600). If key is empty, skipped silently (Skill unavailable but main flow unaffected).
 
 ## Data Formats
 
@@ -116,8 +121,10 @@ xiaopaw/
 
 ## Sandbox Tool Whitelist
 
-Sub-Crews connect to AIO-Sandbox MCP with exactly 4 allowed tools:
-`sandbox_execute_bash`, `sandbox_execute_code`, `sandbox_file_operations`, `sandbox_str_replace_editor`
+Sub-Crews connect to AIO-Sandbox MCP with all tools exposed (no whitelist filter since web_browse Skill requires browser_* tools).
+Core tools: `sandbox_execute_bash`, `sandbox_execute_code`, `sandbox_file_operations`, `sandbox_str_replace_editor`, `sandbox_convert_to_markdown`
+Browser tools: `browser_navigate`, `browser_get_markdown`, `browser_screenshot`, `browser_get_clickable_elements`, and other `browser_*` tools.
+Tool constraints are enforced via Agent backstory behavioral rules.
 
 ## Commands
 
@@ -168,15 +175,17 @@ python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not san
 - `xiaopaw/agents/models.py` — MainTaskOutput Pydantic 输出模型
 - `xiaopaw/agents/config/agents.yaml` — Orchestrator Agent 配置（role/goal/backstory/max_iter）
 - `xiaopaw/agents/config/tasks.yaml` — 主任务配置（description/expected_output）
-- `xiaopaw/cleanup/service.py` — CleanupService: 启动时 sweep + ensure_workspace_dirs + write_feishu_credentials
+- `xiaopaw/cleanup/service.py` — CleanupService: 启动时 sweep + ensure_workspace_dirs + write_feishu_credentials + write_baidu_credentials
 - `xiaopaw/skills/history_reader/SKILL.md` — history_reader Skill（内联分页读取历史，无需沙盒，v2.0）
 - `xiaopaw/skills/feishu_ops/SKILL.md` + `scripts/` — feishu_ops Skill（10个独立脚本：send_text/post/image/file, read_doc/sheet, get_chat_members, list/create_events；共享 _feishu_auth.py）
 - `xiaopaw/skills/scheduler_mgr/SKILL.md` — scheduler_mgr Skill（定时任务创建/查看/删除，task 型）
+- `xiaopaw/skills/baidu_search/SKILL.md` + `scripts/search.py` — baidu_search Skill（百度千帆搜索，凭证注入 .config/baidu.json，task 型）
+- `xiaopaw/skills/web_browse/SKILL.md` — web_browse Skill（Markdown 快速提取 + browser_* 浏览器自动化，task 型）
 - `xiaopaw/skills/pdf/` `docx/` `pptx/` `xlsx/` — 文件处理 Skills（task 型）
 - `tests/integration/test_file_pipeline.py` — 文件处理全链路集成测试（P1附件复制、P2文件意图识别、P3全链路）
 - `tests/unit/test_feishu_ops_scripts.py` — feishu_ops 脚本单元测试（30个，覆盖所有脚本）
 
-**Test stats**: 504 unit tests, 86% coverage ✅ | 29 integration tests (no-llm)
+**Test stats**: 562 unit tests, 86% coverage ✅ | 29 integration tests (no-llm)
 
 ## Known Issues / Code Quality
 
@@ -187,6 +196,15 @@ Last review: 2026-03-06. All CRITICAL and HIGH issues fixed. Remaining MEDIUM:
 | # | File | Issue | Status |
 |---|------|-------|--------|
 | M1 | `aliyun_llm.py:110-139` | `_normalize_multimodal_tool_result` 用脆弱字符串匹配检测图片 URL，易被注入破坏 | open |
+
+**Recently added features** (2026-03-10):
+- baidu_search Skill：百度千帆搜索，BAIDU_API_KEY 写入 .config/baidu.json
+- web_browse Skill：sandbox_convert_to_markdown + browser_* 全工具浏览器自动化
+- Sub-Crew 移除 MCP 白名单（create_static_tool_filter），改用 backstory 行为约束
+- logging_config.py 修复：新增 console handler，root logger 显式设为 INFO 级别
+- QWEN_DEBUG_PAYLOAD 环境变量：控制是否输出完整 LLM 请求 payload
+- SkillLoaderTool：_CREWAI_VAR_PATTERN 修复 CrewAI "Template variable not found" 报错
+- sandbox_directive 扩展到 21 个工具（含 browser_* 系列和环境探查工具）
 
 **Recently added features** (2026-03-09):
 - Thinking/Loading UI：send_thinking() 发起"⏳ 思考中..."卡片，返回 card_msg_id；update_card() PATCH 更新卡片展示 Agent 最终回复

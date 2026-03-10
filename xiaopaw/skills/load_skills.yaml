@@ -34,6 +34,16 @@ skills:
     type: task        # 需要代码执行（读写 tasks.json）
     enabled: true
 
+  # ── 网页搜索 ────────────────────────────────────────────────────────────────
+  - name: baidu_search
+    type: task        # 需要代码执行（调用百度千帆搜索 API）
+    enabled: true
+
+  # ── 网页浏览与内容提取 ──────────────────────────────────────────────────────
+  - name: web_browse
+    type: task        # 需要代码执行（browser_* 工具 + sandbox_convert_to_markdown）
+    enabled: true
+
   # ── 历史记录读取（参考型：Agent 自行推理，无需 Sub-Crew）──────────────────────
   - name: history_reader
     type: reference   # 直接返回操作规范给主 Agent

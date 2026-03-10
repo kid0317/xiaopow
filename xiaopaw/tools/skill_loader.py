@@ -53,6 +53,10 @@ _SKILLS_DIR = Path(__file__).parents[2] / "xiaopaw" / "skills"
 # 沙盒内的 skills 挂载路径（与 sandbox-docker-compose.yaml volumes 对应）
 _SANDBOX_SKILLS_MOUNT = "/mnt/skills"
 
+# CrewAI interpolate_only() 使用的变量模式（与 crewai/utilities/string_utils.py 保持一致）
+# 用于扫描 skill_instructions 中的 {var} 占位符，构建自映射 inputs，防止 "Template variable not found" 报错
+_CREWAI_VAR_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_\-]*)\}")
+
 
 # ── 输入 Schema ─────────────────────────────────────────────────────────────
 
@@ -194,8 +198,8 @@ class SkillLoaderTool(BaseTool):
 
         session_dir = f"/workspace/sessions/{self._session_id}" if self._session_id else "/workspace/sessions/<session_id>"
         self.description = (
-            "当需要完成的任务涉及以下XML列表中的技能时，调用此工具。\n"
-            "根据下方 XML 列表选择正确的 skill_name，并在 task_context 中提供完整任务信息。\n"
+            "当需要完成的任务涉及以下 XML 列表中的技能时，调用此工具。\n"
+            "根据 XML 列表选择正确的 skill_name；调用 task 类型 Skill 时，task_context 中必须定义 JSON schema。\n"
             f"当前 session 工作目录（沙盒路径）：{session_dir}/\n"
             f"  - 输入文件（用户上传）：{session_dir}/uploads/\n"
             f"  - 输出文件（Skill 产出）：{session_dir}/outputs/\n\n"
@@ -236,6 +240,16 @@ class SkillLoaderTool(BaseTool):
         _skill_base = f"{_SANDBOX_SKILLS_MOUNT}/{skill_name}"
         _session_dir = f"/workspace/sessions/{self._session_id}" if self._session_id else "/workspace/sessions/<session_id>"
 
+        # 替换 SKILL.md 中的路径占位符，必须在转义单花括号之前执行，否则占位符会被转义掉
+        stripped = stripped.replace("{skill_base}", _skill_base)
+        stripped = stripped.replace("{_skill_base}", _skill_base)
+        stripped = stripped.replace("{session_id}", self._session_id or "<session_id>")
+        stripped = stripped.replace("{session_dir}", _session_dir)
+
+        # 转义 SKILL.md 正文中剩余的 { } 为 {{ }}，防止 CrewAI 把代码示例里的
+        # {var_name}、f-string、JSON key 等当作 Task/Agent 模板变量报错
+        stripped = stripped.replace("{", "{{").replace("}", "}}")
+
         # 拼接沙盒路径替换指令，消灭 LLM 路径幻觉
         sandbox_directive = (
             f"\n\n<sandbox_execution_directive>\n"
@@ -248,14 +262,36 @@ class SkillLoaderTool(BaseTool):
             f"当前用户 routing_key（飞书消息发送目标，feishu_ops 脚本的 --routing_key 参数）："
             f"{self._routing_key if self._routing_key else '<由系统注入，如未显示请联系管理员>'}\n\n"
             f"可用沙盒工具及正确用法：\n"
+            f"【核心执行工具】\n"
             f"1. sandbox_execute_bash：执行 Shell 命令。参数：cmd（必填）、cwd（可选）、timeout（可选，秒）。\n"
             f"   - 运行脚本示例：cmd=\"python {_skill_base}/scripts/xxx.py 参数\"\n"
             f"   - 安装依赖：cmd=\"pip install 包名\"，再重试任务。\n"
-            f"2. sandbox_file_operations：统一文件操作。action='read'|'write'|'list'|'find'|'replace'|'search'。\n"
+            f"2. sandbox_execute_code：执行代码片段。language='python'|'javascript'。\n"
+            f"3. sandbox_file_operations：统一文件操作。action='read'|'write'|'list'|'find'|'replace'|'search'。\n"
             f"   - 读取文件：action=\"read\", path=\"文件绝对路径\"\n"
             f"   - 列出目录：action=\"list\", path=\"{_session_dir}/uploads\"\n"
-            f"3. sandbox_str_replace_editor：编辑文件。command='view'|'create'|'str_replace'|'insert'。\n"
-            f"4. sandbox_execute_code：执行代码片段。language='python'|'javascript'。\n"
+            f"4. sandbox_str_replace_editor：编辑文件。command='view'|'create'|'str_replace'|'insert'。\n"
+            f"5. sandbox_convert_to_markdown：将 URL 或文件 URI 快速转换为 Markdown 文本。\n"
+            f"   - 参数：uri=\"https://example.com\" 或 uri=\"file:///path/to/file\"\n"
+            f"   - 适合静态页面快速内容提取，无需打开浏览器。\n"
+            f"【浏览器自动化工具】（动态页面/截图/表单填写时使用）\n"
+            f"6. browser_navigate：打开 URL。参数：url=\"https://...\"\n"
+            f"7. browser_get_markdown：获取当前页面 Markdown 内容（最推荐的内容提取方式）。\n"
+            f"8. browser_get_text：获取当前页面纯文本内容。\n"
+            f"9. browser_read_links：获取页面所有链接列表。\n"
+            f"10. browser_screenshot：截图。参数：name（必填）、fullPage=true（全页截图）、selector（元素截图）。\n"
+            f"11. browser_get_clickable_elements：获取页面所有可点击/输入/选择元素（含 index，操作前必须先调用）。\n"
+            f"12. browser_click：点击元素。参数：index（来自 get_clickable_elements）。\n"
+            f"13. browser_form_input_fill：填写输入框。参数：index、value、clear=false。\n"
+            f"14. browser_select：下拉选择。参数：index、value。\n"
+            f"15. browser_press_key：按键。参数：key（Enter/Tab/Escape/ArrowDown 等）。\n"
+            f"16. browser_scroll：滚动页面。参数：amount（正数向下，负数向上，单位 px）。\n"
+            f"17. browser_evaluate：执行 JavaScript。参数：script=\"() => {{ ... }}\"。\n"
+            f"18. browser_new_tab/browser_tab_list/browser_switch_tab/browser_close_tab：标签页管理。\n"
+            f"19. browser_close：关闭浏览器（任务完成后必须调用，释放资源）。\n"
+            f"【环境探查工具】\n"
+            f"20. sandbox_get_context：获取沙盒环境信息（版本、HOME 目录等）。\n"
+            f"21. sandbox_get_packages：获取已安装的包列表。参数：language='python'|'nodejs'。\n"
             f"</sandbox_execution_directive>"
         )
 
@@ -331,12 +367,20 @@ class SkillLoaderTool(BaseTool):
         if self._sandbox_url:
             crew_kwargs["sandbox_mcp_url"] = self._sandbox_url
         crew = build_skill_crew(**crew_kwargs)
-        result = await crew.akickoff(
-            inputs={
-                "task_context": task_context,
-                "skill_name": skill_name,
-            }
-        )
+
+        # 💡 CrewAI 加载 Agent backstory 时会用正则扫描所有 {var} 占位符并要求 inputs 中有对应键。
+        # 即使 SKILL.md 中的 {var} 已转义为 {{var}}，CrewAI 的正则扫描器（\{(\w+)\}）
+        # 仍能匹配 {{var}} 内部的 {var} 并抛出 "Template variable not found" 报错。
+        # 用 _CREWAI_VAR_PATTERN 收集所有此类变量名，注入自映射 inputs，
+        # 让验证通过而不影响实际模板替换（{{var}} 转义语义不变）。
+        base_inputs: dict[str, str] = {"task_context": task_context, "skill_name": skill_name}
+        extra_vars = {
+            v for v in _CREWAI_VAR_PATTERN.findall(instructions)
+            if v not in base_inputs
+        }
+        inputs = {**base_inputs, **{v: f"{{{v}}}" for v in extra_vars}}
+
+        result = await crew.akickoff(inputs=inputs)
         return str(result)
 
     # ── 异步路径（FastAPI / akickoff 调用链）────────────────────────────────

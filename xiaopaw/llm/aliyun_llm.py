@@ -72,6 +72,15 @@ class AliyunLLM(BaseLLM):
                 _rc = 2
         self.retry_count = _rc if _rc is not None else 2
 
+        # Debug 开关：仅在调试模式下详细打印请求 payload
+        # 环境变量 QWEN_DEBUG_PAYLOAD=1/true/on 时开启
+        self.debug_payload = os.getenv("QWEN_DEBUG_PAYLOAD", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
     def _normalize_multimodal_tool_result(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
         """
         将 CrewAI 对 AddImageTool/AddImageToolLocal 的 stringify 结果还原为多模态 user 消息，
@@ -180,12 +189,13 @@ class AliyunLLM(BaseLLM):
                     except Exception:
                         logger.warning("Callback %r raised on_llm_start", cb, exc_info=True)
 
-        logger.info(
-            "发送 LLM API 请求 endpoint=%s model=%s payload=%s",
-            self.endpoint,
-            self.model,
-            json.dumps(payload, ensure_ascii=False),
-        )
+        # 常规模式下只打关键信息，避免日志过大；调试模式下再输出完整 payload
+        logger.info("发送 LLM API 请求 endpoint=%s model=%s", self.endpoint, payload.get("model"))
+        if self.debug_payload:
+            logger.info(
+                "LLM 请求 payload=%s",
+                json.dumps(payload, ensure_ascii=False, indent=2),
+            )
         last_exception: BaseException | None = None
         result: dict[str, Any] = {}
         for attempt in range(self.retry_count + 1):

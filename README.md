@@ -5,7 +5,7 @@
 ### 核心功能
 
 - **飞书全场景接入**：单聊（p2p）、群聊（group）、话题群（thread）
-- **Skills 生态**：7 个内置 Skill，覆盖文件处理、飞书操作、定时任务、历史查询
+- **Skills 生态**：9 个内置 Skill，覆盖文件处理、网页搜索/浏览、飞书操作、定时任务、历史查询
 - **AIO-Sandbox 隔离**：所有代码执行在 Docker 沙盒中运行，凭证不经过 LLM
 - **Verbose 详细模式**：实时推送 Agent 推理过程，可随时开关
 - **定时任务**：支持一次性（at）、固定间隔（every）、Cron 表达式三种模式
@@ -23,6 +23,8 @@
 | `xlsx` | 任务型 | Excel 表格读取与处理 |
 | `feishu_ops` | 任务型 | 读取飞书云文档、向指定群/用户发消息 |
 | `scheduler_mgr` | 任务型 | 创建/查看/删除定时任务 |
+| `baidu_search` | 任务型 | 百度千帆网络搜索，支持时间过滤与站点限定 |
+| `web_browse` | 任务型 | 网页内容提取（Markdown 转换）与浏览器自动化（截图/表单/JS） |
 | `history_reader` | 参考型 | 分页读取历史对话记录 |
 
 ### 目录结构
@@ -55,6 +57,8 @@ xiaopaw/
     ├── pdf/ docx/ pptx/ xlsx/
     ├── feishu_ops/
     ├── scheduler_mgr/
+    ├── baidu_search/
+    ├── web_browse/
     └── history_reader/
 ```
 
@@ -70,7 +74,9 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 ```bash
 export QWEN_API_KEY=<阿里云千问 API Key>
-export BAIDU_API_KEY=<百度千帆 API Key>       # 使用 BaiduSearchTool 时需要
+export BAIDU_API_KEY=<百度千帆 API Key>       # baidu_search Skill 需要
+# 调试时可选开启完整请求 payload 日志
+export QWEN_DEBUG_PAYLOAD=1
 ```
 
 ### 配置 `config.yaml`
@@ -87,6 +93,9 @@ cp config.yaml.template config.yaml
 feishu:
   app_id: "${FEISHU_APP_ID}"       # 飞书开放平台应用 App ID
   app_secret: "${FEISHU_APP_SECRET}" # 飞书开放平台应用 App Secret
+
+baidu:
+  api_key: "${BAIDU_API_KEY}"       # 百度千帆 API Key（baidu_search Skill）
 
 sandbox:
   url: "http://localhost:8022/mcp"  # AIO-Sandbox MCP 地址
@@ -174,6 +183,6 @@ python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not san
 python3 -m pytest tests/integration/ -v -s --timeout=180
 ```
 
-**测试统计**（2026-03-09）：504 单元测试，86% 覆盖率 ✅
+**测试统计**（2026-03-10）：562 单元测试，86% 覆盖率 ✅
 
 更多设计细节见 `DESIGN.md` 和 `CLAUDE.md`。

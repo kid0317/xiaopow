@@ -2,8 +2,8 @@
 
 > **项目**：XiaoPaw（小爪子）——飞书本地工作助手
 > **课程**：第17课 项目实战2（工具篇）
-> **版本**：v1.1
-> **最后更新**：2026-03-09
+> **版本**：v1.2
+> **最后更新**：2026-03-10
 
 ---
 
@@ -55,11 +55,13 @@
 | `xlsx` | 任务型 | Excel 表格读取与处理 |
 | `feishu_ops` | 任务型 | 发文字/富文本/图片/文件消息；读云文档/表格；查群成员；管理日历 |
 | `scheduler_mgr` | 任务型 | 创建/查看/删除定时任务 |
+| `baidu_search` | 任务型 | 百度千帆网络搜索，支持时间过滤与站点限定，返回标题/URL/摘要 |
+| `web_browse` | 任务型 | 网页内容提取（Markdown 快速转换）+ 完整浏览器自动化（截图/表单/JS 交互） |
 | `history_reader` | 内联型 | 分页读取历史对话记录（SkillLoaderTool 内部处理，无需沙盒） |
 
 ### 1.4 实现状态
 
-全部功能模块已实现并通过测试（504 单元测试，86% 覆盖率；29 集成测试）。
+全部功能模块已实现并通过测试（562 单元测试，86% 覆盖率；29 集成测试）。
 
 消息处理主链路已全面打通：飞书 WebSocket → FeishuListener → Runner → Main Agent（SkillLoaderTool）→ Sub-Crew（AIO-Sandbox）→ FeishuSender。所有 Skills 已实现。CleanupService、CronService、TestAPI、metrics 均已在 main.py 接入。
 
@@ -70,7 +72,14 @@
 - **Bot 入群欢迎事件**：监听 im.chat.member.bot.added_v1，支持自定义回调
 - **Allowed chats 白名单**：可选参数控制群消息白名单，p2p 始终开放
 
-feishu_ops Skill 采用脚本化架构（`scripts/` 目录下 10 个独立 Python 脚本），每类操作一个脚本，共享 `_feishu_auth.py` 鉴权模块，全部输出统一 JSON 格式到 stdout。
+最近新增功能（2026-03-10）：
+- **baidu_search Skill**：百度千帆网络搜索，支持时间过滤与站点限定
+- **web_browse Skill**：网页内容提取（Markdown 快速转换）+ 完整浏览器自动化
+- **搜索策略**：主 Agent backstory 新增 baidu_search > web_browse 优先级策略
+- **Sub-Crew 开放全部 MCP 工具**：移除 `create_static_tool_filter` 白名单，开放 AIO-Sandbox 全部工具（含 browser_* 系列）；在 Agent backstory 中以行为约束替代接口级白名单
+- **baidu_search 凭证注入**：CleanupService 新增 `write_baidu_credentials()`，启动时将 BAIDU_API_KEY 写入沙盒 `.config/baidu.json`
+- **日志修复**：`setup_logging()` 新增控制台 handler（之前仅输出文件日志），root logger 显式设置 INFO 级别
+- **模板变量修复**：SkillLoaderTool 新增 `_CREWAI_VAR_PATTERN`，对 SKILL.md 中已转义的 `{{var}}` 构造自映射 inputs，避免 CrewAI "Template variable not found" 报错
 
 ---
 
@@ -111,8 +120,8 @@ graph TB
     end
 
     subgraph AIO-Sandbox 容器
-        SB[MCP Server\n4工具白名单]
-        CFG[.config/feishu.json\ncredentials 预置]
+        SB[MCP Server\n全部工具开放]
+        CFG[.config/feishu.json\n.config/baidu.json\ncredentials 预置]
     end
 
     FS_WS -->|WebSocket 推送| FL
@@ -233,13 +242,13 @@ xiaopaw/
 │   └── metrics_server.py        # /metrics HTTP 服务
 ├── session/manager.py + models.py
 ├── cron/service.py + models.py
-├── cleanup/service.py           # CleanupService（sweep + workspace 初始化 + credentials 写入）
-├── skills/                      # pdf/ docx/ pptx/ xlsx/ feishu_ops/ scheduler_mgr/ history_reader/
+├── cleanup/service.py           # CleanupService（sweep + workspace 初始化 + feishu/baidu credentials 写入）
+├── skills/                      # pdf/ docx/ pptx/ xlsx/ feishu_ops/ scheduler_mgr/ baidu_search/ web_browse/ history_reader/
 └── data/                        # 运行时数据（.gitignore）
     ├── sessions/index.json + {sid}.jsonl
     ├── traces/{sid}/{ts}_{msg_id}/  # meta.json + main.jsonl + skills/
     ├── cron/tasks.json
-    └── workspace/.config/feishu.json + sessions/{sid}/uploads|outputs|tmp
+    └── workspace/.config/feishu.json + .config/baidu.json + sessions/{sid}/uploads|outputs|tmp
 ```
 
 ---
@@ -318,6 +327,26 @@ xiaopaw/
 | 沙盒依赖 | `lark-oapi`，credentials 从 `/workspace/.config/feishu.json` 读取 |
 | 典型调用 | "把这份文档的内容总结发到 HR 群" |
 
+### baidu_search
+
+| 项目 | 内容 |
+|------|------|
+| 类型 | 任务型（task） |
+| 核心能力 | 百度千帆 web_search API 搜索，返回标题/URL/内容摘要 |
+| 沙盒依赖 | `requests`；credentials 从 `/workspace/.config/baidu.json` 读取 |
+| 典型调用 | "搜索最新的 Python asyncio 最佳实践"、"查一下今天有什么科技新闻" |
+| 参数 | `--query`（必填）、`--top_k`（1-50）、`--recency`（week/month/semiyear/year）、`--sites`（限定站点） |
+
+### web_browse
+
+| 项目 | 内容 |
+|------|------|
+| 类型 | 任务型（task） |
+| 核心能力 | 快速 Markdown 提取（静态页面）+ 完整浏览器自动化（动态页面/截图/表单） |
+| 沙盒依赖 | `sandbox_convert_to_markdown`（快速模式）；`browser_*` 系列工具（完整浏览器模式） |
+| 典型调用 | "打开这个 URL 获取内容"、"帮我截图这个页面"、"填写并提交这个表单" |
+| 搜索协作 | 与 baidu_search 配合：先搜索获取 URL，再用 web_browse 获取完整页面内容 |
+
 ### scheduler_mgr
 
 | 项目 | 内容 |
@@ -378,8 +407,8 @@ xiaopaw/
 
 | 原则 | 实现方式 |
 |------|---------|
-| **Credentials 不进模型** | 启动时从 config.yaml 读取凭证，写入沙盒 `.config/feishu.json`；Skill 脚本直接读文件，全程不经过 LLM |
-| **沙盒工具白名单** | `create_static_tool_filter` 限定 4 个工具（bash/code/file_ops/editor），防止 MCP 工具越权 |
+| **Credentials 不进模型** | 启动时从 config.yaml/环境变量读取凭证，写入沙盒 `.config/feishu.json` 和 `.config/baidu.json`；Skill 脚本直接读文件，全程不经过 LLM |
+| **沙盒工具约束** | Sub-Crew 开放全部 AIO-Sandbox MCP 工具（含 browser_* 系列）；通过 Agent backstory 行为约束代替接口级白名单，防止 Agent 误用工具名 |
 | **Session 隔离** | routing_key 精确到 open_id/chat_id/thread_id，不同用户/群聊完全隔离 |
 | **文件目录隔离** | 每个 session 独立工作目录，Sub-Crew 只注入自身 session 路径 |
 | **Bot 回复不走 Skill** | FeishuSender 在 Runner 层直接调用，不经过 Agent/Skill |
@@ -450,6 +479,7 @@ services:
 | `data/workspace/sessions/*/tmp/` | Sub-Crew 临时文件 | 中 | Session 结束立即清理；兜底 1 天 |
 | `data/cron/tasks.json` | 定时任务配置 | 极小 | 永久保留（任务自身 delete_after_run） |
 | `data/workspace/.config/feishu.json` | Credentials | 极小 | 永久保留（随配置更新） |
+| `data/workspace/.config/baidu.json` | Credentials | 极小 | 永久保留（随配置更新） |
 
 **双触发清理**：
 

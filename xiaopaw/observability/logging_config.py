@@ -31,18 +31,41 @@ class JsonFormatter(logging.Formatter):
 
 
 def setup_logging(log_dir: Path) -> None:
-    """初始化文件日志（JSON 行格式）。"""
+    """初始化日志：
+
+    - 控制台：人类可读格式，默认 INFO 级别
+    - 文件：JSON 行格式，写入 data/logs/xiaopaw.log
+    """
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "xiaopaw.log"
 
-    handler = RotatingFileHandler(
+    file_handler = RotatingFileHandler(
         log_path,
         maxBytes=50 * 1024 * 1024,  # 50MB
         backupCount=5,
         encoding="utf-8",
     )
-    handler.setFormatter(JsonFormatter())
+    file_handler.setFormatter(JsonFormatter())
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(
+        logging.Formatter(
+            fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
 
     root = logging.getLogger()
-    root.addHandler(handler)
+    # 避免重复添加 handler（例如测试多次调用 setup_logging）
+    handler_types = {type(h) for h in root.handlers}
+    if RotatingFileHandler not in handler_types:
+        root.addHandler(file_handler)
+    if logging.StreamHandler not in handler_types:
+        root.addHandler(console_handler)
+
+    # 默认使用 INFO 级别，保证关键业务日志可见。
+    # Python root logger 默认 level 是 WARNING(30)，不是 NOTSET(0)，
+    # 因此必须显式降到 INFO；若已经是 DEBUG 则保留不升。
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
 

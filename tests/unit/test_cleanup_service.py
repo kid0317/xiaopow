@@ -169,3 +169,53 @@ class TestWriteFeishuCredentials:
         creds = json.loads(creds_file.read_text())
         assert creds["app_id"] == "new_id"
         assert creds["app_secret"] == "new_secret"
+
+
+# ── write_baidu_credentials ───────────────────────────────────────────────────
+
+
+class TestWriteBaiduCredentials:
+    def test_credentials_written_correctly(self, tmp_path: Path):
+        svc = _make_service(tmp_path)
+        svc.write_baidu_credentials(api_key="qianfan-key-xyz")
+
+        creds_file = tmp_path / "workspace/.config/baidu.json"
+        assert creds_file.exists()
+        creds = json.loads(creds_file.read_text())
+        assert creds["api_key"] == "qianfan-key-xyz"
+
+    def test_empty_api_key_skips_write(self, tmp_path: Path):
+        svc = _make_service(tmp_path)
+        svc.write_baidu_credentials(api_key="")
+
+        creds_file = tmp_path / "workspace/.config/baidu.json"
+        assert not creds_file.exists(), "空 api_key 不应写入文件"
+
+    def test_credentials_atomic_write(self, tmp_path: Path):
+        """写入过程中不应留有 .json.tmp 残留文件。"""
+        svc = _make_service(tmp_path)
+        svc.write_baidu_credentials(api_key="key-123")
+
+        tmp_file = tmp_path / "workspace/.config/baidu.json.tmp"
+        assert not tmp_file.exists(), ".tmp 文件应在写入后被清理"
+
+    def test_overwrite_existing_credentials(self, tmp_path: Path):
+        svc = _make_service(tmp_path)
+        svc.write_baidu_credentials(api_key="old-key")
+        svc.write_baidu_credentials(api_key="new-key")
+
+        creds_file = tmp_path / "workspace/.config/baidu.json"
+        creds = json.loads(creds_file.read_text())
+        assert creds["api_key"] == "new-key"
+
+    def test_config_dir_created_if_missing(self, tmp_path: Path):
+        """目标目录不存在时应自动创建。"""
+        svc = _make_service(tmp_path)
+        config_dir = tmp_path / "workspace" / ".config"
+        assert not config_dir.exists()
+
+        svc.write_baidu_credentials(api_key="key-abc")
+
+        assert config_dir.is_dir()
+        assert (config_dir / "baidu.json").exists()
+

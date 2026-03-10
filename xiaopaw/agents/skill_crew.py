@@ -7,7 +7,7 @@
      主 Agent = PMO（项目管理），Sub-Agent = 各职能部门执行具体工作
 
 💡【第14课·MCP 协议】Sub-Crew 通过 MCPServerHTTP 接入 AIO-Sandbox，
-   采用 create_static_tool_filter 白名单过滤，只开放 4 个安全工具
+   开放全部 MCP 工具（无白名单过滤）
 
 每次 SkillLoaderTool 触发任务型 Skill 时，调用 build_skill_crew() 构建
 一个全新的 Sub-Crew 实例，在 AIO-Sandbox 中执行 Skill 逻辑。
@@ -16,7 +16,6 @@
 - 每次调用返回新实例，防止 CrewAI 内部状态污染
 - Sub-Crew 不注入 step_callback（verbose 只推主 Agent 的推理，避免话题噪音）
 - session 工作目录和用户 routing_key 通过 SkillLoaderTool 的 sandbox_execution_directive 注入，不经过主 LLM
-- 工具白名单：只开放 4 个沙盒工具，防止越权
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ import logging
 
 from crewai import Agent, Crew, Process, Task
 from crewai.mcp import MCPServerHTTP
-from crewai.mcp.filters import create_static_tool_filter
 
 from xiaopaw.llm.aliyun_llm import AliyunLLM
 
@@ -35,19 +33,6 @@ logger = logging.getLogger(__name__)
 
 # 默认端口：sandbox-docker-compose.yaml 映射 8022:8080
 _DEFAULT_SANDBOX_MCP_URL = "http://localhost:8022/mcp"
-
-# 💡【第14课·工具白名单】create_static_tool_filter 是 MCP 安全设计的关键：
-# AIO-Sandbox 暴露了 30+ 个工具（含 browser_* 等高危工具），
-# 通过白名单只开放 4 个沙盒安全工具，防止 Agent 越权（如访问外部网络）
-# 这对应课程"避免巨型 MCP，防止工具越权"的最佳实践
-_SANDBOX_TOOL_FILTER = create_static_tool_filter(
-    allowed_tool_names=[
-        "sandbox_execute_bash",       # Shell 命令执行（运行 Skill 脚本）
-        "sandbox_execute_code",       # Python/JS 代码执行（数据处理）
-        "sandbox_file_operations",    # 文件读写列举查找（I/O 操作）
-        "sandbox_str_replace_editor", # 文件内容编辑（与 Anthropic str_replace 兼容）
-    ]
-)
 
 
 def build_skill_crew(
@@ -72,12 +57,11 @@ def build_skill_crew(
     Returns:
         已配置好的 Crew 实例，可直接调用 kickoff() / akickoff()
     """
-    # 💡【第14课·MCP 接入】MCPServerHTTP + tool_filter 是 CrewAI 原生 MCP 接入方式
+    # 💡【第14课·MCP 接入】MCPServerHTTP 是 CrewAI 原生 MCP 接入方式
     # framework 自动将 MCP 工具转换为 Agent 可用工具，无需手动封装
     # 💡【第03课·工厂模式】每次构建新实例 → 新的 MCP 连接 → 状态完全隔离
     sandbox_mcp = MCPServerHTTP(
         url=sandbox_mcp_url,
-        tool_filter=_SANDBOX_TOOL_FILTER,
     )
 
     skill_llm = AliyunLLM(model=sub_agent_model, region="cn", temperature=0.3)
@@ -100,6 +84,16 @@ def build_skill_crew(
             f"  - 用户上传的文件位于：{session_dir}/uploads/\n"
             f"  - 任务输出文件写入：{session_dir}/outputs/\n"
             f"  - 临时工作区：{session_dir}/tmp/\n\n"
+            f"⚠️ 工具使用规范（必须严格遵守）：\n"
+            f"你没有名为 '{skill_name}' 的直接工具。\n"
+            f"所有操作必须通过沙盒工具完成：\n"
+            f"  - sandbox_execute_bash：运行 bash 命令或 Python 脚本\n"
+            f"  - sandbox_execute_code：在沙盒中直接执行 Python 代码\n"
+            f"  - sandbox_file_operations：读写沙盒文件\n"
+            f"  - sandbox_str_replace_editor：在沙盒中编辑文件\n"
+            f"  - sandbox_convert_to_markdown：将 URL 转换为 Markdown\n"
+            f"  - browser_* 系列工具：浏览器自动化\n"
+            f"绝对禁止：将 '{skill_name}' 作为工具名调用（该名称不是任何工具）。\n\n"
             f"你掌握以下操作规范，请严格遵循：\n\n"
             f"{skill_instructions}"
         ),

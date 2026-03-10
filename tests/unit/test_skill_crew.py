@@ -169,3 +169,50 @@ class TestBuildSkillCrew:
             call_kwargs = mock_mcp.call_args.kwargs
             # 默认 URL 指向本地 sandbox
             assert "localhost:8022" in call_kwargs["url"]
+
+    def test_mcp_server_has_no_tool_filter(self):
+        """移除白名单后，MCPServerHTTP 不应携带 tool_filter 参数。"""
+        with patch("xiaopaw.agents.skill_crew.MCPServerHTTP") as mock_mcp, \
+             patch("xiaopaw.agents.skill_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.skill_crew.Agent"), \
+             patch("xiaopaw.agents.skill_crew.Task"), \
+             patch("xiaopaw.agents.skill_crew.Crew"):
+            build_skill_crew(
+                skill_name="test_skill",
+                skill_instructions="instructions",
+            )
+            call_kwargs = mock_mcp.call_args.kwargs
+            assert "tool_filter" not in call_kwargs, "不应传入 tool_filter，已开放全部 MCP 工具"
+
+    def test_backstory_warns_skill_name_not_a_tool(self):
+        """backstory 应包含明确警告：skill_name 不是工具名，禁止直接调用。"""
+        with patch("xiaopaw.agents.skill_crew.MCPServerHTTP"), \
+             patch("xiaopaw.agents.skill_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.skill_crew.Agent") as mock_agent, \
+             patch("xiaopaw.agents.skill_crew.Task"), \
+             patch("xiaopaw.agents.skill_crew.Crew"):
+            build_skill_crew(
+                skill_name="baidu_search",
+                skill_instructions="instructions",
+            )
+            agent_kwargs = mock_agent.call_args.kwargs
+            backstory = agent_kwargs.get("backstory", "")
+            assert "baidu_search" in backstory
+            assert "不是任何工具" in backstory
+            assert "sandbox_execute_bash" in backstory
+
+    def test_backstory_skill_name_warning_uses_current_name(self):
+        """不同 skill_name 时，警告中的工具名禁用提示应随之更新。"""
+        with patch("xiaopaw.agents.skill_crew.MCPServerHTTP"), \
+             patch("xiaopaw.agents.skill_crew.AliyunLLM"), \
+             patch("xiaopaw.agents.skill_crew.Agent") as mock_agent, \
+             patch("xiaopaw.agents.skill_crew.Task"), \
+             patch("xiaopaw.agents.skill_crew.Crew"):
+            build_skill_crew(
+                skill_name="web_browse",
+                skill_instructions="instructions",
+            )
+            agent_kwargs = mock_agent.call_args.kwargs
+            backstory = agent_kwargs.get("backstory", "")
+            assert "web_browse" in backstory
+            assert "不是任何工具" in backstory

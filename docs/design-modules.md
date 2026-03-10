@@ -1,5 +1,5 @@
 > 本文档是 [DESIGN.md](../DESIGN.md) §4 的详细内容
-> 最后更新：2026-03-09
+> 最后更新：2026-03-10
 
 ## 4. 模块设计
 
@@ -106,6 +106,7 @@ thread:oc_chat789:ot_x  →    s-uuid-005
 |------|------|
 | `session_id` | 当前会话 ID，注入沙盒路径（不传给 LLM） |
 | `sandbox_url` | AIO-Sandbox MCP 端点 URL |
+| `routing_key` | 当前用户路由键，注入 sandbox_execution_directive |
 | `history_all` | 完整历史消息列表（供 history_reader 内联分页使用） |
 
 **SkillLoaderTool 工作原理**（渐进式披露）：
@@ -126,8 +127,8 @@ flowchart TD
     REF --> INJECT["返回指令文本\nMain Agent 自行推理执行"]
 
     TYPE -->|task| BUILD["build_skill_crew(skill_name, full_instructions)"]
-    BUILD --> CREW["Sub-Crew.kickoff(inputs={task_context})"]
-    CREW --> SB["AIO-Sandbox MCP\n4工具白名单执行"]
+    BUILD --> CREW["Sub-Crew.kickoff(inputs={task_context, + extra_vars自映射})"]
+    CREW --> SB["AIO-Sandbox MCP\n全部工具开放执行"]
     SB --> RES{SkillResult\nerrcode?}
     RES -->|0 成功| OK["返回 message + files 摘要"]
     RES -->|非0 失败| FAIL["返回建设性错误 + 重试建议"]
@@ -138,17 +139,26 @@ flowchart TD
 
 **history_reader 内联处理**：当 `skill_name == "history_reader"` 时，SkillLoaderTool 直接从 `_history_all`（构造时由系统注入的完整历史）按 `page` / `page_size` 分页，返回 JSON 结果，不经过 Sub-Crew 或沙盒。LLM 只需传入分页参数，无需知道 session_id。
 
+**SKILL.md 模板变量处理**：`_get_skill_instructions()` 在返回指令前：
+1. 替换已知路径占位符（`{skill_base}` / `{session_dir}` 等）
+2. 将剩余的 `{var}` 全部转义为 `{{var}}`，防止 CrewAI 误解析为模板变量
+3. 在 `_execute_skill_async()` 中，`_CREWAI_VAR_PATTERN` 扫描转义后的 instructions，将 CrewAI 正则仍能找到的变量名（`{{var}}` 内部的 `{var}`）以自映射形式加入 `akickoff(inputs=...)` 中，避免 "Template variable not found" 报错。
+
 ---
 
 ### 4.5 Sub-Crew 工厂
 
 **职责**：任务型 Skill 触发时，动态构建隔离的 Sub-Crew，接入 AIO-Sandbox。
 
-**沙盒工具白名单**（4 个）：
-- `sandbox_execute_bash`
-- `sandbox_execute_code`
-- `sandbox_file_operations`
-- `sandbox_str_replace_editor`
+**MCP 工具开放策略**：
+
+Sub-Crew 通过 `MCPServerHTTP` 接入 AIO-Sandbox，开放全部 MCP 工具（无白名单过滤），包括：
+- **核心执行工具**：`sandbox_execute_bash`、`sandbox_execute_code`、`sandbox_file_operations`、`sandbox_str_replace_editor`
+- **网页工具**：`sandbox_convert_to_markdown`（URL → Markdown）
+- **浏览器自动化**：`browser_navigate`、`browser_get_markdown`、`browser_screenshot`、`browser_get_clickable_elements` 等 browser_* 系列工具
+- **环境探查**：`sandbox_get_context`、`sandbox_get_packages`
+
+工具约束通过 **Agent backstory 行为规范**实现（而非接口级过滤）：backstory 明确告知 Sub-Agent 可用工具列表，并禁止将 skill_name 当作工具名调用。
 
 **设计要点**：
 - 每次 Skill 调用都构建**新实例**，防止状态污染
@@ -262,6 +272,11 @@ flowchart TD
 ### 4.8 CleanupService（存储清理）
 
 **职责**：按策略清理过期文件，防止磁盘无限增长。双触发：启动时 Sweep + 每日 3:00 定时任务。
+
+**启动初始化**（除清理外，还执行以下操作）：
+- `ensure_workspace_dirs()`：创建 session workspace 目录结构
+- `write_feishu_credentials(app_id, app_secret)`：将飞书凭证写入沙盒 `.config/feishu.json`（0o600 权限，write-then-rename 原子写）
+- `write_baidu_credentials(api_key)`：将百度千帆 API Key 写入沙盒 `.config/baidu.json`（同上；`api_key` 为空时跳过，不阻断主流程）
 
 **清理策略**：
 
