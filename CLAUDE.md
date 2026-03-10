@@ -142,18 +142,18 @@ python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not san
 ## Development Progress
 
 **All modules implemented** (with tests):
-- `xiaopaw/models.py` — InboundMessage, Attachment, SenderProtocol
+- `xiaopaw/models.py` — InboundMessage, Attachment, SenderProtocol (send/send_thinking/update_card/send_text)
 - `xiaopaw/session/models.py` — SessionEntry, RoutingEntry, MessageEntry
 - `xiaopaw/session/manager.py` — SessionManager (index.json + JSONL, concurrent-safe)
-- `xiaopaw/api/capture_sender.py` — CaptureSender (future-based reply capture)
+- `xiaopaw/api/capture_sender.py` — CaptureSender (future-based reply capture，支持 send_thinking/update_card/send_text)
 - `xiaopaw/api/schemas.py` — TestRequest, TestResponse (Pydantic)
 - `xiaopaw/api/test_server.py` — TestAPI (aiohttp, wired with Runner + SessionManager)
-- `xiaopaw/runner.py` — Runner (per-routing_key queue, slash commands, agent_fn DI)
+- `xiaopaw/runner.py` — Runner (per-routing_key queue, slash commands, send_thinking Loading 卡片 + update_card 替换)
 - `xiaopaw/feishu/session_key.py` — resolve_routing_key (pure function)
 - `xiaopaw/cron/models.py` — CronJob, CronSchedule, CronPayload, CronState
 - `xiaopaw/cron/service.py` — CronService (tick-based scheduler, mtime+size hot-reload)
-- `xiaopaw/feishu/listener.py` — FeishuListener wired to WebSocket (im.message.receive_v1 → Runner.dispatch)
-- `xiaopaw/feishu/sender.py` — FeishuSender (lark-oapi, p2p/group/thread text send)
+- `xiaopaw/feishu/listener.py` — FeishuListener (im.message.receive_v1 + im.chat.member.bot.added_v1，post 富文本解析，allowed_chats 白名单)
+- `xiaopaw/feishu/sender.py` — FeishuSender (send: interactive 卡片 lark_md 格式；send_thinking/update_card 加载效果；send_text 纯文本)
 - `xiaopaw/feishu/downloader.py` — FeishuDownloader: 附件下载到 workspace/sessions/{sid}/uploads/
 - `xiaopaw/main.py` — Full entry point: load config.yaml, start all services (Listener + CronService + CleanupService + TestAPI + metrics)
 - `xiaopaw/llm/aliyun_llm.py` — AliyunLLM: CrewAI `BaseLLM` adapter for Qwen (sync/async, retries, function calling, multimodal)
@@ -176,7 +176,7 @@ python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not san
 - `tests/integration/test_file_pipeline.py` — 文件处理全链路集成测试（P1附件复制、P2文件意图识别、P3全链路）
 - `tests/unit/test_feishu_ops_scripts.py` — feishu_ops 脚本单元测试（30个，覆盖所有脚本）
 
-**Test stats**: 349 unit tests, ~89% coverage ✅ | 29 integration tests (no-llm)
+**Test stats**: 504 unit tests, 86% coverage ✅ | 29 integration tests (no-llm)
 
 ## Known Issues / Code Quality
 
@@ -188,6 +188,10 @@ Last review: 2026-03-06. All CRITICAL and HIGH issues fixed. Remaining MEDIUM:
 |---|------|-------|--------|
 | M1 | `aliyun_llm.py:110-139` | `_normalize_multimodal_tool_result` 用脆弱字符串匹配检测图片 URL，易被注入破坏 | open |
 
-**Not yet implemented**:
-- `cleanup/service.py` — Storage cleanup by policy
-- `main.py` — 0% coverage (entry point, requires full service stack)
+**Recently added features** (2026-03-09):
+- Thinking/Loading UI：send_thinking() 发起"⏳ 思考中..."卡片，返回 card_msg_id；update_card() PATCH 更新卡片展示 Agent 最终回复
+- Interactive 卡片 + Markdown 渲染：send() 现在发送 lark_md 格式的交互式卡片（不再纯文本）
+- Post 富文本解析：FeishuListener 新增 _extract_post_text() 静态方法，正确处理 msg_type="post" 消息
+- Bot 入群事件：FeishuListener 监听 im.chat.member.bot.added_v1，通过可选回调 on_bot_added 解耦
+- Allowed chats 白名单：FeishuListener 支持可选参数 allowed_chats，p2p 始终放行；群消息和入群事件检查白名单
+- CaptureSender 扩展：新增对应 stub 方法 send_thinking/update_card/send_text，TestAPI 完全支持新 UI

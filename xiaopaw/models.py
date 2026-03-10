@@ -35,3 +35,15 @@ class SenderProtocol(Protocol):
     async def send(
         self, routing_key: str, content: str, root_id: str
     ) -> None: ...
+
+    async def send_thinking(
+        self, routing_key: str, root_id: str
+    ) -> str | None: ...
+
+    async def update_card(
+        self, card_msg_id: str, content: str
+    ) -> None: ...
+
+    async def send_text(
+        self, routing_key: str, content: str, root_id: str
+    ) -> None: ...

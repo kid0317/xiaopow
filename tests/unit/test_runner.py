@@ -28,6 +28,26 @@ class MockSender:
         self.messages.append(msg)
         await self._queue.put(msg)
 
+    async def send_text(
+        self, routing_key: str, content: str, root_id: str
+    ) -> None:
+        """slash 命令纯文本回复，与 send 行为相同（供测试捕获）"""
+        msg = (routing_key, content, root_id)
+        self.messages.append(msg)
+        await self._queue.put(msg)
+
+    async def send_thinking(
+        self, routing_key: str, root_id: str
+    ) -> str | None:
+        """Stub：模拟 Loading 卡片，不实际发送，返回 None 触发 send() 降级"""
+        return None  # 降级到 send()，保持现有测试语义
+
+    async def update_card(self, card_msg_id: str, content: str) -> None:
+        """更新卡片内容，同时写入 queue 供测试捕获"""
+        msg = ("card", content, card_msg_id)
+        self.messages.append(msg)
+        await self._queue.put(msg)
+
     async def wait_for_message(self, timeout: float = 2.0) -> tuple[str, str, str]:
         return await asyncio.wait_for(self._queue.get(), timeout=timeout)
 

@@ -1,5 +1,5 @@
 > 本文档是 [DESIGN.md](../DESIGN.md) §4 的详细内容
-> 最后更新：2026-03-06
+> 最后更新：2026-03-09
 
 ## 4. 模块设计
 
@@ -16,7 +16,7 @@
 | `text` | 直接提取 `content.text`，构造 InboundMessage |
 | `image` | 解析 `image_key`，存入 `attachment` 字段，content 置空 |
 | `file` | 解析 `file_key` + `file_name`，存入 `attachment` 字段，content 置空 |
-| `post` | 提取富文本纯文本部分，构造 InboundMessage |
+| `post` | 提取富文本纯文本部分（调用 `_extract_post_text` 解析 JSON），构造 InboundMessage |
 | `audio` | 回复"暂不支持语音消息"，不进入 Agent |
 | `sticker` | 忽略，不回复 |
 | `merge_forward` | 回复"暂不支持转发合集"，不进入 Agent |
@@ -25,6 +25,8 @@
 - 通过 `resolve_routing_key(event)` 将飞书事件转为 routing_key
 - 解析消息内容和附件元信息（只记录 file_key，不下载）
 - 构造 `InboundMessage`（含 `routing_key`、`content`、`msg_id`、`root_id`、`sender_id`、`ts`、`attachment`）
+- 监听 `im.chat.member.bot.added_v1` 事件（Bot 入群欢迎），通过可选参数 `on_bot_added: Callable[[str, str], Awaitable[None]]` 解耦
+- 支持可选参数 `allowed_chats: list[str] | None`：p2p 消息始终放行；群消息和 Bot 入群事件检查白名单（None 或 [] 表示允许所有）
 
 ---
 
@@ -74,10 +76,9 @@ thread:oc_chat789:ot_x  →    s-uuid-005
 2. 动态解析当前 active session
 3. 附件下载（session 确定后才知道目标目录）
 4. 加载对话历史（最近 max_turns 条）
-5. 构建 Crew（注入 verbose step_callback）
-6. 构建 Trace Writer
-7. 执行主 Agent
-8. 写 Trace + Session，发送回复
+5. **发送 Loading 卡片**：send_thinking() 发起"⏳ 思考中..."卡片，获取 card_msg_id（失败返回 None，不阻断主流程）
+6. 执行主 Agent
+7. 写 Trace + Session，**更新卡片**：update_card(card_msg_id) 替换为最终结果；失败时降级调用 send()
 
 **Slash Command 处理**（在进入 Agent 前拦截）：
 
@@ -210,7 +211,29 @@ sequenceDiagram
 
 ### 4.7 FeishuSender（消息发送）
 
-**职责**：根据 routing_key 类型选择正确的飞书发送 API，含幂等控制和重试。
+**职责**：根据 routing_key 类型选择正确的飞书发送 API，支持交互式卡片、纯文本、卡片更新，含幂等控制和重试。
+
+**三个核心方法**：
+
+| 方法 | 功能 | 用途 |
+|------|------|------|
+| `send(routing_key, content, root_id)` | 发送 interactive 卡片（lark_md Markdown 格式） | 主 Agent 最终回复 |
+| `send_thinking(routing_key, root_id)` | 发送"⏳ 思考中..."加载卡片，返回 card_msg_id | Runner 步骤 5，显示 Loading 状态 |
+| `update_card(card_msg_id, content)` | PATCH 更新已发送卡片的内容 | Runner 步骤 8，将 Loading 卡片替换为结果 |
+| `send_text(routing_key, content, root_id)` | 发送纯文本消息（msg_type="text"） | Slash 命令回复 |
+
+**send_thinking 实现细节**：
+- 发送成功返回 `message_id`（即 card_msg_id），失败返回 None（不阻断主流程）
+- 内容固定为"⏳ 思考中，请稍候..."
+- 卡片格式：`{"config": {"wide_screen_mode": true}, "elements": [{"tag": "div", "text": {"content": "...", "tag": "lark_md"}}]}`
+
+**update_card 实现细节**：
+- 调用 `PATCH /im/v1/messages/:message_id`，使用 `PatchMessageRequestBody`
+- 失败时抛出异常，由 Runner 捕获后降级为 send()
+
+**_build_card 辅助方法**：
+- 构建交互式卡片 JSON（lark_md Markdown 格式）
+- 用于 send() 和 send_thinking()
 
 **API 选择逻辑**：
 
@@ -222,7 +245,7 @@ flowchart TD
     RK -->|group:{chat_id}| GRP["POST /im/v1/messages\nreceive_id_type=chat_id"]
     RK -->|thread:{chat_id}:{thread_id}| THR["POST /im/v1/messages/:root_id/reply\nreply_in_thread=true"]
 
-    P2P & GRP & THR --> BODY["RequestBody\nmsg_type='text'\ncontent='{\"text\":\"...\"}'\nuuid={msg_id}  ← 幂等去重"]
+    P2P & GRP & THR --> BODY["RequestBody\nmsg_type='interactive' 或 'text'\ncontent=lark_md JSON 或 纯文本\nuuid={msg_id}  ← 幂等去重"]
     BODY --> RESP{API 响应}
     RESP -->|成功| DONE([完成])
     RESP -->|失败| RETRY["最多重试 3 次\n指数退避 1s/2s/4s"]
@@ -232,6 +255,7 @@ flowchart TD
 - 话题群（thread）回复：使用 `ReplyMessage` API，`message_id=root_id`，`reply_in_thread=True`
 - `uuid` 字段传入 `feishu_msg_id`，防止网络重试重复发送（飞书幂等去重）
 - Bot 自身回复**不走 Skill**，直接在 Runner 层调用 FeishuSender
+- send_thinking 失败（返回 None）时，Runner 仍继续执行 Agent，后续 send() 或 update_card() 可能成功
 
 ---
 

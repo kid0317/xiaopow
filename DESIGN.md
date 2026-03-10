@@ -2,8 +2,8 @@
 
 > **项目**：XiaoPaw（小爪子）——飞书本地工作助手
 > **课程**：第17课 项目实战2（工具篇）
-> **版本**：v1.0
-> **最后更新**：2026-03-06
+> **版本**：v1.1
+> **最后更新**：2026-03-09
 
 ---
 
@@ -59,9 +59,16 @@
 
 ### 1.4 实现状态
 
-全部功能模块已实现并通过测试（349 单元测试，~89% 覆盖率；29 集成测试）。
+全部功能模块已实现并通过测试（504 单元测试，86% 覆盖率；29 集成测试）。
 
 消息处理主链路已全面打通：飞书 WebSocket → FeishuListener → Runner → Main Agent（SkillLoaderTool）→ Sub-Crew（AIO-Sandbox）→ FeishuSender。所有 Skills 已实现。CleanupService、CronService、TestAPI、metrics 均已在 main.py 接入。
+
+最近新增功能（2026-03-09）：
+- **卡片消息 + Loading 效果**：send_thinking() 发起加载卡片，update_card() 替换为最终结果
+- **Markdown 渲染**：interactive 卡片格式，支持 lark_md Markdown 富文本
+- **Post 富文本解析**：FeishuListener 正确解析 msg_type="post" 消息
+- **Bot 入群欢迎事件**：监听 im.chat.member.bot.added_v1，支持自定义回调
+- **Allowed chats 白名单**：可选参数控制群消息白名单，p2p 始终开放
 
 feishu_ops Skill 采用脚本化架构（`scripts/` 目录下 10 个独立 Python 脚本），每类操作一个脚本，共享 `_feishu_auth.py` 鉴权模块，全部输出统一 JSON 格式到 stdout。
 

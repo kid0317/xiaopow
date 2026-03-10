@@ -1,6 +1,6 @@
 """FeishuListener — 维护飞书 WebSocket 长连接，将事件转换为 InboundMessage.
 
-当前版本只处理文本消息，其它类型保留空 content，交由上游统一回复“收到”。
+当前版本处理文本消息和 post 富文本消息，其它类型保留空 content，交由上游统一回复"收到"。
 """
 
 from __future__ import annotations
@@ -22,15 +22,32 @@ logger = logging.getLogger(__name__)
 
 
 OnMessageFn = Callable[[InboundMessage], Awaitable[None]]
+OnBotAddedFn = Callable[[str, str], Awaitable[None]]
 
 
 class _XiaoPawEventHandler(EventDispatcherHandler):
-    """自定义事件处理器：拦截 im.message.receive_v1，并转发给 Runner."""
+    """自定义事件处理器：拦截 im.message.receive_v1 和 im.chat.member.bot.added_v1，并转发给 Runner."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, on_message: OnMessageFn) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        on_message: OnMessageFn,
+        on_bot_added: OnBotAddedFn | None = None,
+        allowed_chats: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self._loop = loop
         self._on_message = on_message
+        self._on_bot_added = on_bot_added
+        self._allowed_chats = allowed_chats  # None 或 [] 表示允许所有
+
+    def _is_chat_allowed(self, chat_id: str, chat_type: str) -> bool:
+        """检查 chat_id 是否在白名单中。p2p 消息始终允许。"""
+        if chat_type == "p2p":
+            return True
+        if not self._allowed_chats:  # None 或空列表
+            return True
+        return chat_id in self._allowed_chats
 
     def do_without_validation(self, payload: bytes) -> None:  # type: ignore[override]
         try:
@@ -50,6 +67,18 @@ class _XiaoPawEventHandler(EventDispatcherHandler):
             chat_type = message.get("chat_type") or ""
             record_feishu_event(event_type or "unknown", chat_type)
 
+            # ── 处理 Bot 入群事件 ──────────────────────────────────────────
+            if event_type == "im.chat.member.bot.added_v1":
+                chat_id = event_obj.get("chat_id") or ""
+                group_name = event_obj.get("name") or ""
+                if not self._is_chat_allowed(chat_id, "group"):
+                    return
+                if self._on_bot_added is not None:
+                    asyncio.run_coroutine_threadsafe(
+                        self._on_bot_added(chat_id, group_name), self._loop
+                    )
+                return
+
             if event_type != "im.message.receive_v1":
                 # 其它事件暂不处理
                 return
@@ -61,6 +90,10 @@ class _XiaoPawEventHandler(EventDispatcherHandler):
             chat_type = message.get("chat_type") or ""
             chat_id = message.get("chat_id") or ""
             thread_id = message.get("thread_id")
+
+            # ── allowed_chats 白名单检查 ────────────────────────────────────
+            if not self._is_chat_allowed(chat_id, chat_type):
+                return
 
             routing_key = resolve_routing_key(
                 chat_type=chat_type,
@@ -122,8 +155,15 @@ class FeishuListener:
         on_message: OnMessageFn,
         loop: asyncio.AbstractEventLoop,
         log_level: LogLevel = LogLevel.INFO,
+        on_bot_added: OnBotAddedFn | None = None,
+        allowed_chats: list[str] | None = None,
     ) -> None:
-        handler = _XiaoPawEventHandler(loop=loop, on_message=on_message)
+        handler = _XiaoPawEventHandler(
+            loop=loop,
+            on_message=on_message,
+            on_bot_added=on_bot_added,
+            allowed_chats=allowed_chats,
+        )
         self._ws_client = WSClient(
             app_id=app_id,
             app_secret=app_secret,
@@ -175,6 +215,55 @@ class FeishuListener:
         return None  # pragma: no cover
 
     @staticmethod
+    def _extract_post_text(data: dict) -> str:
+        """从 post 消息的 content dict 中提取纯文本。
+
+        飞书 post 消息结构::
+
+            {
+              "zh_cn": {
+                "title": "标题（可选）",
+                "content": [
+                  [{"tag": "text", "text": "第一段"}, {"tag": "a", ...}],
+                  [{"tag": "text", "text": "第二段"}]
+                ]
+              }
+            }
+
+        提取逻辑：
+        - 优先取 zh_cn，不存在时取根对象
+        - 提取所有 tag == "text" 的 text 字段
+        - title 非空时拼接在最前面，与 content 间用换行分隔
+        - 返回 .strip() 后的结果
+        """
+        try:
+            node = data.get("zh_cn") or data
+            title = node.get("title") or "" if isinstance(node, dict) else ""
+            raw_content = node.get("content") if isinstance(node, dict) else None
+
+            if not isinstance(raw_content, list):
+                return ""
+
+            paragraph_texts: list[str] = []
+            for paragraph in raw_content:
+                if not isinstance(paragraph, list):
+                    continue
+                words = [
+                    elem.get("text", "")
+                    for elem in paragraph
+                    if isinstance(elem, dict) and elem.get("tag") == "text"
+                ]
+                paragraph_texts.append(" ".join(words))
+
+            body = " ".join(paragraph_texts)
+
+            if title:
+                return f"{title}\n{body}".strip()
+            return body.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
     def _extract_content(msg_type: str, content_json: str) -> str:
         """根据消息类型从 content JSON 中提取纯文本内容."""
         if not content_json:
@@ -188,6 +277,9 @@ class FeishuListener:
         if msg_type == "text":
             return data.get("text", "")
 
+        if msg_type == "post":
+            return FeishuListener._extract_post_text(data)
+
         # 其它类型先不做细分，统一交给上游决定如何处理
         return ""
 
@@ -200,3 +292,4 @@ async def run_forever(listener: FeishuListener) -> None:
         except Exception as exc:  # pragma: no cover - 运行时行为
             logger.exception("FeishuListener stopped with error, retrying: %s", exc)
             await asyncio.sleep(5.0)
+

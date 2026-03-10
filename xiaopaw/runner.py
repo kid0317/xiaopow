@@ -153,7 +153,7 @@ class Runner:
         # 1. Slash Command 拦截（不进入 Agent，不写历史）
         slash_reply = await self._handle_slash(inbound)
         if slash_reply is not None:
-            await self._sender.send(key, slash_reply, inbound.root_id)
+            await self._sender.send_text(key, slash_reply, inbound.root_id)
             return
 
         # 2. 动态解析当前 active session
@@ -180,13 +180,16 @@ class Runner:
         # 4. 加载对话历史
         history = await self._session_mgr.load_history(session.id)
 
-        # 5. 执行 Agent
+        # 5. 发送 Loading 卡片（send_thinking），获取 card_msg_id
+        card_msg_id = await self._sender.send_thinking(key, inbound.root_id)
+
+        # 6. 执行 Agent
         reply = await self._agent_fn(
             user_content, history, session.id,
             inbound.routing_key, inbound.root_id, session.verbose,
         )
 
-        # 6. 写入 session 历史
+        # 7. 写入 session 历史
         await self._session_mgr.append(
             session.id,
             user=user_content,
@@ -194,8 +197,11 @@ class Runner:
             assistant=reply,
         )
 
-        # 7. 发送回复
-        await self._sender.send(key, reply, inbound.root_id)
+        # 8. 发送回复：优先更新卡片，失败时降级为 send()
+        if card_msg_id:
+            await self._sender.update_card(card_msg_id, reply)
+        else:
+            await self._sender.send(key, reply, inbound.root_id)
 
     # ── Slash Command ─────────────────────────────────────────
 

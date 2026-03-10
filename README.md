@@ -10,6 +10,8 @@
 - **Verbose 详细模式**：实时推送 Agent 推理过程，可随时开关
 - **定时任务**：支持一次性（at）、固定间隔（every）、Cron 表达式三种模式
 - **TestAPI**：HTTP 接口本地调试，无需真实飞书环境
+- **卡片消息 + Loading 效果**：发送交互式卡片，Loading 状态实时更新（2026-03-09 新增）
+- **Markdown 富文本渲染**：支持 lark_md 格式，Agent 回复支持加粗、斜体、链接等（2026-03-09 新增）
 
 ### 内置 Skills
 
@@ -126,9 +128,25 @@ curl -X POST http://127.0.0.1:9090/api/test/message \
   -H "Content-Type: application/json" \
   -d '{"routing_key": "p2p:ou_test001", "content": "你好"}'
 
+# 响应示例（Bot 回复已通过卡片消息 + update_card 完整更新）
+{
+  "msg_id": "test_xxx",
+  "reply": "**你好！** 我是 XiaoPaw 工作助手。有什么可以帮助你的吗？",
+  "session_id": "s-uuid-001",
+  "duration_ms": 2345,
+  "skills_called": []
+}
+
 # 清空会话数据
 curl -X DELETE http://127.0.0.1:9090/api/test/sessions
 ```
+
+**卡片消息流程**（从 2026-03-09 开始）：
+1. 用户发送消息 → Runner 接收
+2. Runner 调用 `send_thinking()` → 发送"⏳ 思考中..."加载卡片，获取 card_msg_id
+3. Agent 执行（5-30s）
+4. Runner 调用 `update_card(card_msg_id, 最终结果)` → 更新卡片内容为 Agent 回复
+5. 若更新失败，降级调用 `send()` 重新发送整条消息
 
 ### Slash 命令
 
@@ -155,5 +173,7 @@ python3 -m pytest tests/integration/test_e2e_conversation.py -m "llm and not san
 # 完整集成测试（需启动 Sandbox）
 python3 -m pytest tests/integration/ -v -s --timeout=180
 ```
+
+**测试统计**（2026-03-09）：504 单元测试，86% 覆盖率 ✅
 
 更多设计细节见 `DESIGN.md` 和 `CLAUDE.md`。

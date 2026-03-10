@@ -140,11 +140,16 @@ async def async_main() -> None:
 
     # ── 8. WebSocket Listener ───────────────────────────────────────────────
     loop = asyncio.get_running_loop()
+    allowed_chats: list[str] = feishu_cfg.get("allowed_chats", []) or []
     listener = FeishuListener(
         app_id=app_id,
         app_secret=app_secret,
         on_message=runner.dispatch,
         loop=loop,
+        allowed_chats=allowed_chats if allowed_chats else None,
+        # TODO: 实现 on_bot_added — 向新群发送欢迎卡片
+        # on_bot_added=lambda chat_id, name: sender.send_welcome_card(chat_id, name),
+        on_bot_added=None,
     )
 
     logger.info("XiaoPaw ready. sandbox_url=%s, test_api=%s", sandbox_url, enable_test_api)
