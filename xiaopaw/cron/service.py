@@ -195,6 +195,28 @@ class CronService:
                         delete_after_run=raw.get("delete_after_run", False),
                     )
                 )
+
+            # 为首次加载、且尚未计算 next_run_at_ms 的 enabled 任务补全下一次触发时间。
+            # 这样由外部（如 scheduler_mgr Skill）写入 tasks.json 且 state.next_run_at_ms 为空的任务
+            # 也能被 CronService 正常调度。
+            #
+            # 同时，为了让“修改 cron 表达式”一类操作更加健壮，我们在每次加载时
+            # 都会根据当前 cron 表达式重新计算 cron 任务的 next_run_at_ms，
+            # 而不是盲信文件中持久化的值。这样即使外部工具只是更新了 schedule.expr
+            # 却忘记清空 state.next_run_at_ms，新的 cron 规则也能立即生效。
+            now_ms = _now_ms()
+            for job in self.jobs:
+                if not job.enabled:
+                    continue
+                if job.schedule.kind == "cron" and job.schedule.expr:
+                    job.state.next_run_at_ms = self._next_cron_ms(job)
+                    continue
+                if job.state.next_run_at_ms is not None:
+                    continue
+                if job.schedule.kind == "at" and job.schedule.at_ms is not None:
+                    job.state.next_run_at_ms = job.schedule.at_ms
+                elif job.schedule.kind == "every" and job.schedule.every_ms is not None:
+                    job.state.next_run_at_ms = now_ms + job.schedule.every_ms
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.error("Failed to parse tasks.json: %s", e)
             self.jobs = []

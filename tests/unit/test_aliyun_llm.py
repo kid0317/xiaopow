@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import requests
 
-from xiaopaw.llm.aliyun_llm import AliyunLLM
+from xiaopaw.llm.aliyun_llm import (
+    AliyunLLM,
+    _normalize_mcp_tool_arguments,
+    _truncate_tool_results,
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -400,6 +405,89 @@ class TestNormalizeMultimodal:
         msgs = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
         result, flag = llm._normalize_multimodal_tool_result(msgs)
         assert flag is False
+
+
+# ── _normalize_mcp_tool_arguments ───────────────────────────────
+
+
+class TestNormalizeMcpToolArguments:
+    """MCP 工具参数规范化：字符串 'None'/'True'/'False' 转为合法 JSON，避免 sandbox_file_operations 等 schema 校验失败。"""
+
+    def test_file_types_none_string_becomes_empty_list(self):
+        raw = [{
+            "id": "call_1",
+            "function": {
+                "name": "localhost_8022_mcp_sandbox_file_operations",
+                "arguments": '{"action": "list", "path": "/workspace/sessions/s-1/uploads/", "pattern": "None", "recursive": "False", "file_types": "None"}',
+            },
+        }]
+        out = _normalize_mcp_tool_arguments(raw)
+        assert len(out) == 1
+        args = json.loads(out[0]["function"]["arguments"])
+        assert args["file_types"] == []
+        assert args["recursive"] is False
+        assert "pattern" not in args  # 非 list 的 "None" 被删除
+
+    def test_boolean_strings_normalized(self):
+        raw = [{
+            "id": "call_2",
+            "function": {"name": "mcp_tool", "arguments": '{"recursive": "True", "show_hidden": "False"}'},
+        }]
+        out = _normalize_mcp_tool_arguments(raw)
+        args = json.loads(out[0]["function"]["arguments"])
+        assert args["recursive"] is True
+        assert args["show_hidden"] is False
+
+    def test_passthrough_valid_json_unchanged(self):
+        raw = [{
+            "id": "call_3",
+            "function": {"name": "mcp_tool", "arguments": '{"action": "read", "path": "/tmp/x"}'},
+        }]
+        out = _normalize_mcp_tool_arguments(raw)
+        assert out[0]["function"]["arguments"] == '{"action": "read", "path": "/tmp/x"}'
+
+    def test_empty_list_unchanged(self):
+        raw = [{
+            "id": "call_4",
+            "function": {"name": "mcp_tool", "arguments": '{"file_types": []}'},
+        }]
+        out = _normalize_mcp_tool_arguments(raw)
+        args = json.loads(out[0]["function"]["arguments"])
+        assert args["file_types"] == []
+
+
+# ── _truncate_tool_results ─────────────────────────────────────
+
+
+class TestTruncateToolResults:
+    """tool 返回过长时截断，避免 payload 过大导致 API 500。"""
+
+    def test_short_tool_content_unchanged(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "c1", "content": "short"},
+        ]
+        out = _truncate_tool_results(msgs, max_chars=100)
+        assert out[1]["content"] == "short"
+
+    def test_long_tool_content_truncated(self):
+        long_content = "x" * 200
+        msgs = [{"role": "tool", "tool_call_id": "c1", "content": long_content}]
+        out = _truncate_tool_results(msgs, max_chars=50)
+        assert len(out) == 1
+        assert out[0]["content"] != long_content
+        assert "截断" in out[0]["content"]
+        assert "换用其他方法" in out[0]["content"]
+
+    def test_non_tool_messages_unchanged(self):
+        msgs = [{"role": "system", "content": "s" * 2000}]
+        out = _truncate_tool_results(msgs, max_chars=100)
+        assert out[0]["content"] == "s" * 2000
+
+    def test_max_chars_zero_passthrough(self):
+        msgs = [{"role": "tool", "tool_call_id": "c1", "content": "x" * 500}]
+        out = _truncate_tool_results(msgs, max_chars=0)
+        assert out[0]["content"] == "x" * 500
 
 
 # ── acall() ───────────────────────────────────────────────────

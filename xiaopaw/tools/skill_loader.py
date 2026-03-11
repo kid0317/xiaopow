@@ -269,7 +269,7 @@ class SkillLoaderTool(BaseTool):
             f"2. sandbox_execute_code：执行代码片段。language='python'|'javascript'。\n"
             f"3. sandbox_file_operations：统一文件操作。action='read'|'write'|'list'|'find'|'replace'|'search'。\n"
             f"   - 读取文件：action=\"read\", path=\"文件绝对路径\"\n"
-            f"   - 列出目录：action=\"list\", path=\"{_session_dir}/uploads\"\n"
+            f"   - 列出目录：action=\"list\", path=\"{_session_dir}/uploads\"（可选参数 file_types/pattern/recursive 不需要时勿传，勿传字符串 \"None\"；列表用 []，布尔用 true/false）\n"
             f"4. sandbox_str_replace_editor：编辑文件。command='view'|'create'|'str_replace'|'insert'。\n"
             f"5. sandbox_convert_to_markdown：将 URL 或文件 URI 快速转换为 Markdown 文本。\n"
             f"   - 参数：uri=\"https://example.com\" 或 uri=\"file:///path/to/file\"\n"

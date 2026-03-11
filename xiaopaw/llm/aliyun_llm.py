@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 import asyncio
 import base64
+import copy
 import json
 import logging
 import os
@@ -16,6 +17,82 @@ from crewai import BaseLLM
 
 
 logger = logging.getLogger(__name__)
+
+# MCP 工具中要求为 list 的可选参数：LLM 常传字符串 "None"，导致 schema 校验失败，此处规范为 []
+_MCP_LIST_PARAMS = frozenset({"file_types"})
+
+# 单条 tool 返回内容最大字符数，超出则截断，避免 payload 过大导致 API 500（如 xlsx 解析结果、大文件 list 等）
+# 可通过环境变量 LLM_TOOL_RESULT_MAX_CHARS 覆盖，默认约 12000 字符（约 3k tokens）
+_DEFAULT_TOOL_RESULT_MAX_CHARS = 12_000
+_TRUNCATE_SUFFIX = (
+    "\n\n[系统提示：上述工具返回因内容过大已被截断，仅保留前 {max_chars} 字。"
+    "若你发现信息不完整，请换用其他方法完成任务，例如：分批处理、只读取/汇总部分数据、将中间结果写入文件再按需读取等，不要依赖被截断的片段做完整结论。]"
+)
+
+
+def _normalize_mcp_tool_arguments(tool_calls: list[dict]) -> list[dict]:
+    """规范化 MCP 工具参数：将字符串 'None'/'True'/'False' 转为合法 JSON 类型，避免服务端 schema 校验失败。"""
+    result = []
+    for tc in tool_calls:
+        result.append(copy.deepcopy(tc))
+    for tc in result:
+        fn = tc.get("function") or {}
+        raw = fn.get("arguments") or "{}"
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        changed = False
+        for key in list(data.keys()):
+            v = data[key]
+            if v == "None" or v == "null":
+                if key in _MCP_LIST_PARAMS:
+                    data[key] = []
+                else:
+                    del data[key]
+                changed = True
+            elif v == "True":
+                data[key] = True
+                changed = True
+            elif v == "False":
+                data[key] = False
+                changed = True
+        if changed:
+            tc["function"] = {**fn, "arguments": json.dumps(data)}
+    return result
+
+
+def _truncate_tool_results(
+    messages: list[dict],
+    max_chars: int | None = None,
+) -> list[dict]:
+    """对 role=tool 的消息 content 做长度截断，避免 payload 过大导致 API 500。返回新列表，不修改入参。"""
+    max_chars = max_chars or int(os.getenv("LLM_TOOL_RESULT_MAX_CHARS", _DEFAULT_TOOL_RESULT_MAX_CHARS))
+    if max_chars <= 0:
+        return messages
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") != "tool":
+            out.append(copy.deepcopy(m))
+            continue
+        content = m.get("content")
+        if not isinstance(content, str) or len(content) <= max_chars:
+            out.append(copy.deepcopy(m))
+            continue
+        suffix = _TRUNCATE_SUFFIX.format(max_chars=max_chars)
+        truncated = content[: max_chars - len(suffix)] + suffix
+        out.append({**copy.deepcopy(m), "content": truncated})
+        logger.info(
+            "tool_result_truncated tool_call_id=%s original_len=%s max_chars=%s",
+            m.get("tool_call_id"),
+            len(content),
+            max_chars,
+        )
+    return out
 
 
 class AliyunLLM(BaseLLM):
@@ -165,6 +242,8 @@ class AliyunLLM(BaseLLM):
         messages, flag = self._normalize_multimodal_tool_result(messages)
         logger.info("normalized_multimodal_tool_result flag=%s messages=%s", flag, json.dumps(messages, ensure_ascii=False, indent=2))
         self._validate_messages(messages)
+        # 截断过长的 tool 返回，避免 payload 过大导致 DashScope 500
+        messages = _truncate_tool_results(messages)
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -309,8 +388,9 @@ class AliyunLLM(BaseLLM):
                     max_iterations - 1,
                 )
             # CrewAI 会故意传 available_functions=None，让 LLM 只返回原始 tool_calls，
-            # 由 executor 的 _handle_native_tool_calls 执行。此处直接返回 tool_calls 列表。
-            return message["tool_calls"]
+            # 由 executor 的 _handle_native_tool_calls 执行。规范化 MCP 参数（如 file_types 勿传字符串 "None"）。
+            raw_calls = message["tool_calls"]
+            return _normalize_mcp_tool_arguments(raw_calls)
 
         content = message.get("content")
         if content is None:
