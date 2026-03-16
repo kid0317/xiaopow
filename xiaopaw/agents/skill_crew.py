@@ -16,12 +16,17 @@
 - 每次调用返回新实例，防止 CrewAI 内部状态污染
 - Sub-Crew 不注入 step_callback（verbose 只推主 Agent 的推理，避免话题噪音）
 - session 工作目录和用户 routing_key 通过 SkillLoaderTool 的 sandbox_execution_directive 注入，不经过主 LLM
+- 💡【第07课·人设工程】Agent 的 role/goal/backstory 从 agents.yaml 加载，
+  运行时占位符（skill_name/session_dir/skill_instructions）由 _format_cfg() 替换——
+  与主 Crew 保持一致的 YAML+Python 分离惯例
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+import yaml
 from crewai import Agent, Crew, Process, Task
 from crewai.mcp import MCPServerHTTP
 
@@ -29,10 +34,21 @@ from xiaopaw.llm.aliyun_llm import AliyunLLM
 
 logger = logging.getLogger(__name__)
 
+_CONFIG_DIR = Path(__file__).parent / "config"
+
 # ── AIO-Sandbox MCP 配置 ────────────────────────────────────────────────────
 
 # 默认端口：sandbox-docker-compose.yaml 映射 8022:8080
 _DEFAULT_SANDBOX_MCP_URL = "http://localhost:8022/mcp"
+
+
+def _load_yaml(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _format_cfg(cfg: dict, **kwargs) -> dict:
+    """对配置字典中的字符串值做 Python format 替换，非字符串值原样保留。"""
+    return {k: v.format(**kwargs) if isinstance(v, str) else v for k, v in cfg.items()}
 
 
 def build_skill_crew(
@@ -70,66 +86,40 @@ def build_skill_crew(
         f"/workspace/sessions/{session_id}" if session_id else "/workspace/sessions/<session_id>"
     )
 
-    # 💡【第07课·Agent 三要素动态构建】Sub-Crew 的 role/goal/backstory 不来自 YAML，
-    # 而是根据 skill_name 和 session 工作目录动态生成——这是 Sub-Crew 与主 Crew 的关键区别：
-    # 主 Crew 人设固定（YAML），Sub-Crew 人设按任务动态定制
-    # 💡【第07课·max_iter】Sub-Agent 迭代上限设为 20（默认），比主 Agent（50）更保守，
-    # 因为 Sub-Task 范围明确，迭代超限通常意味着 Skill 指令有问题
+    agents_cfg = _load_yaml(_CONFIG_DIR / "agents.yaml")
+    tasks_cfg = _load_yaml(_CONFIG_DIR / "tasks.yaml")
+
+    # 💡【第07课·动态人设】skill_name_upper 供 role 用，skill_name 供 goal/backstory 用
+    # skill_instructions 已由 _get_skill_instructions() 转义 {var} → {{var}}，
+    # Python format 时其内容作为 VALUE 传入，不会被二次解析
+    agent_fmt_vars = dict(
+        skill_name=skill_name,
+        skill_name_upper=skill_name.upper(),
+        session_dir=session_dir,
+        skill_instructions=skill_instructions,
+    )
+    skill_agent_cfg = _format_cfg(dict(agents_cfg["skill_agent"]), **agent_fmt_vars)
+    # max_iter 是运行时参数，不在 YAML 中定义，直接注入
+    skill_agent_cfg["max_iter"] = max_iter
+
+    # 💡【第07课·Agent 三要素】role/goal/backstory 从 YAML 加载，工具/LLM 绑定在 Python 层
     skill_agent = Agent(
-        role=f"{skill_name.upper()} Skill 执行专家",
-        goal=f"严格按照 {skill_name} Skill 的操作规范，在 AIO-Sandbox 中完成任务",
-        backstory=(
-            f"你是一位专精于 {skill_name} 处理的 AI 专家。\n"
-            f"当前 Session 沙盒工作目录：{session_dir}/\n"
-            f"  - 用户上传的文件位于：{session_dir}/uploads/\n"
-            f"  - 任务输出文件写入：{session_dir}/outputs/\n"
-            f"  - 临时工作区：{session_dir}/tmp/\n\n"
-            f"⚠️ 工具使用规范（必须严格遵守）：\n"
-            f"你没有名为 '{skill_name}' 的直接工具。\n"
-            f"所有操作必须通过沙盒工具完成：\n"
-            f"  - sandbox_execute_bash：运行 bash 命令或 Python 脚本\n"
-            f"  - sandbox_execute_code：在沙盒中直接执行 Python 代码，必须通过 stdout 输出 JSON 字符串，例如：print(json.dumps(data, ensure_ascii=False))，如果返回的stdout为空，说明脚本执行的返回为空\n"
-            f"  - sandbox_file_operations：读写沙盒文件\n"
-            f"  - sandbox_str_replace_editor：在沙盒中编辑文件\n"
-            f"  - sandbox_convert_to_markdown：将 URL 转换为 Markdown\n"
-            f"  - browser_* 系列工具：浏览器自动化\n"
-            f"绝对禁止：将 '{skill_name}' 作为工具名调用（该名称不是任何工具）。\n\n"
-            f"‼️ MCP 工具参数（必须使用合法 JSON）：\n"
-            f"- 可选参数不需要时省略，不要传 \"None\"。\n"
-            f"- 列表型（如 file_types）不用时省略或传 []，禁止传 \"None\"。\n"
-            f"- 布尔型传 true/false，禁止传 \"True\"/\"False\"。\n\n"
-            f"‼️ 结果返回约定（MCP 协议）：\n"
-            f"- 当你在 sandbox_execute_code 或 sandbox_execute_bash 中运行 Python / Shell 代码，需要把结构化数据返回给上层 Agent 时，必须通过 stdout 输出 JSON 字符串，例如：print(json.dumps(data, ensure_ascii=False))。\n"
-            f"- 禁止仅依赖最后一行表达式的返回值来传递结果，因为当前 MCP 实现只会读取 stdout；如果 stdout 为空，上层 Agent 将拿不到任何数据。\n"
-            f"- 若某次工具返回出现「内容已截断」或「内容过大已被截断」的提示，说明返回体过大被系统截断，你需要思考其他方法完成任务（例如：分批处理、只取摘要或部分数据、将中间结果写入 outputs 再按需读取、用更小的粒度重新调用工具等），不要依赖被截断的片段做完整结论。\n\n"
-            f"你掌握以下操作规范，请严格遵循：\n\n"
-            f"{skill_instructions}"
-        ),
+        **skill_agent_cfg,
         llm=skill_llm,
         # 💡【第14课·MCP 接入】mcps 参数接收 MCPServerHTTP 列表，框架自动管理连接
         mcps=[sandbox_mcp],
         verbose=True,
-        max_iter=max_iter,
     )
 
-    # 💡【第08课·Task 契约】description 明确执行环境约束，expected_output 定义 JSON 格式
+    # 💡【第08课·Task 契约】description/expected_output 从 YAML 加载
+    # {{task_context}} 经 Python format 变为 {task_context}，
+    # 由 SkillLoaderTool 通过 akickoff(inputs={"task_context": ...}) 注入
+    skill_task_cfg = _format_cfg(dict(tasks_cfg["skill_task"]), session_dir=session_dir)
+
+    # 💡【第08课·Task 契约两要素】description 明确执行环境约束，expected_output 定义 JSON 格式
     # 注意：{task_context} 由 akickoff(inputs=...) 显式注入（第09课·显式上下文传递）
     skill_task = Task(
-        description=(
-            "根据以下任务要求，使用你掌握的 Skill 操作规范完成任务。\n\n"
-            "任务要求：\n{task_context}\n\n"
-            "执行约束：\n"
-            "1. 所有操作必须在 AIO-Sandbox 中执行，禁止直接操作本地文件系统\n"
-            f"2. 输入文件从沙盒路径 {session_dir}/uploads/ 读取\n"
-            f"3. 输出文件必须写到沙盒路径 {session_dir}/outputs/ 目录下\n"
-            "4. 如遇依赖缺失，先在沙盒中 pip install 再继续\n"
-            "5. 返回结果必须符合 task_context 中定义的 JSON schema"
-        ),
-        expected_output=(
-            "一份结构化的任务执行结果 JSON，包含 errcode（0=成功）、"
-            "errmsg（成功时固定'success'，失败时含错误原因和建议）、"
-            "以及 task_context 中定义的其余字段。"
-        ),
+        **skill_task_cfg,
         agent=skill_agent,
     )
 

@@ -127,7 +127,7 @@ index.json 是全局共享资源，多个 routing_key 的 worker 可能并发读
 
 **3. cron/tasks.json — 同 index.json 的 write-then-rename 模式**
 
-CronService 读、scheduler_mgr Skill 写，通过 `asyncio.Lock` 互斥。
+CronService 读写 tasks.json 时使用 write-then-rename 原子更新；scheduler_mgr Skill 在沙盒内通过脚本封装写入同一文件。对于 `cron` 任务，CronService 在每次加载时会根据当前 `expr`/`tz` 重新计算 `state.next_run_at_ms`，避免外部误用旧值。
 
 **设计原则**：
 - 进程内并发用 `asyncio.Lock`（单进程架构，无需跨进程文件锁）
@@ -246,7 +246,7 @@ data/workspace/
 **schedule.kind 三种模式**：
 - `at`：一次性，`at_ms` 为触发时刻毫秒时间戳，`delete_after_run: true` 时触发后自动删除
 - `every`：周期，`every_ms` 为间隔毫秒数，循环执行
-- `cron`：Cron 表达式，`expr` + `tz` 组合，croniter 计算下次触发时间
+- `cron`：Cron 表达式，`expr` + `tz` 组合，croniter 计算下次触发时间。对于 `cron` 任务，外部（包含 scheduler_mgr Skill）写入 tasks.json 时通常将 `state.next_run_at_ms` 设为 `null`，由 CronService 在加载时统一根据最新表达式重算，以避免“改了 expr 却仍按旧时间触发”的问题。
 
 ---
 
@@ -285,10 +285,10 @@ skills:
     type: task
     enabled: true
   - name: feishu_ops
-    type: task        # 脚本化架构：Sub-Crew 调用 scripts/ 下独立 Python 脚本
+    type: task        # 脚本化架构：Sub-Crew 调用 feishu_ops/scripts/ 下独立 Python 脚本
     enabled: true
   - name: scheduler_mgr
-    type: task
+    type: task        # 脚本化架构：Sub-Crew 调用 scheduler_mgr/scripts/ 下独立 Python 脚本
     enabled: true
   - name: history_reader
     type: reference   # SkillLoaderTool 内联处理，不启动 Sub-Crew

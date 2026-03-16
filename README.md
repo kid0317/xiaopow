@@ -21,8 +21,8 @@
 | `docx` | 任务型 | Word 文档读取与处理 |
 | `pptx` | 任务型 | PPT 文档读取与处理 |
 | `xlsx` | 任务型 | Excel 表格读取与处理 |
-| `feishu_ops` | 任务型 | 读取飞书云文档、向指定群/用户发消息 |
-| `scheduler_mgr` | 任务型 | 创建/查看/删除定时任务 |
+| `feishu_ops` | 任务型 | 通过 `scripts/*.py` 脚本读取飞书云文档、向指定群/用户发消息 |
+| `scheduler_mgr` | 任务型 | 通过 `scheduler_mgr/scripts/*.py` 创建/查看/更新/删除定时任务 |
 | `baidu_search` | 任务型 | 百度千帆网络搜索，支持时间过滤与站点限定 |
 | `web_browse` | 任务型 | 网页内容提取（Markdown 转换）与浏览器自动化（截图/表单/JS） |
 | `history_reader` | 参考型 | 分页读取历史对话记录 |

@@ -54,7 +54,7 @@
 | `pptx` | 任务型 | PPT 文档读取与处理 |
 | `xlsx` | 任务型 | Excel 表格读取与处理 |
 | `feishu_ops` | 任务型 | 发文字/富文本/图片/文件消息；读云文档/表格；查群成员；管理日历 |
-| `scheduler_mgr` | 任务型 | 创建/查看/删除定时任务 |
+| `scheduler_mgr` | 任务型 | 通过脚本封装创建/查看/更新/删除定时任务 |
 | `baidu_search` | 任务型 | 百度千帆网络搜索，支持时间过滤与站点限定，返回标题/URL/摘要 |
 | `web_browse` | 任务型 | 网页内容提取（Markdown 快速转换）+ 完整浏览器自动化（截图/表单/JS 交互） |
 | `history_reader` | 内联型 | 分页读取历史对话记录（SkillLoaderTool 内部处理，无需沙盒） |
@@ -352,10 +352,10 @@ xiaopaw/
 | 项目 | 内容 |
 |------|------|
 | 类型 | 任务型（task） |
-| 核心能力 | 解析自然语言意图 → 生成结构化 Job → 写入 `cron/tasks.json` |
-| 沙盒依赖 | 仅文件读写（`sandbox_file_operations`） |
+| 核心能力 | 解析自然语言意图 → 通过脚本封装生成/更新结构化 Job → 写入 `cron/tasks.json` |
+| 沙盒依赖 | 脚本化架构：Sub-Crew 通过 `sandbox_execute_bash` 调用 `scheduler_mgr/scripts/*.py`，内部 `_tasks_store.py` 负责 tasks.json 读写与字段归一化 |
 | 典型调用 | "每周一早上9点提醒我写周报" |
-| 特殊说明 | **只管配置，不管执行**；执行由框架层 CronService 负责 |
+| 特殊说明 | **只管配置，不管执行**；执行由框架层 CronService 负责。对于 `cron` 任务，CronService 在每次加载时根据当前 `expr`/`tz` 重新计算 `state.next_run_at_ms`，外部只需关心 schedule 字段，无需手动维护 state。 |
 
 ### history_reader
 
